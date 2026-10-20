@@ -1,0 +1,82 @@
+# Reusable PR check: scans every Helm chart in the PR, diffs it against the base branch,
+# posts/updates one PR comment, and fails the job on your thresholds.
+#   - uses: MickInSing/helm-visualiser@main
+name: Helm chart check
+description: Helm/Kubernetes/CKS best-practice check with base-vs-PR diff (helm-visualiser)
+inputs:
+  charts-dir:
+    description: Folder to search for charts (relative to the repo root)
+    default: "."
+  kube-version:
+    description: Target Kubernetes version for the deprecated-API check (e.g. 1.36)
+    default: ""
+  fail-under:
+    description: Fail if any chart scores below this (0-100). Empty = don't check
+    default: ""
+  fail-on-new:
+    description: Fail if the PR adds findings at or above this severity (critical|high|medium|low|info). Empty = don't check
+    default: "high"
+  comment:
+    description: Post / update a PR comment with the report
+    default: "true"
+  image:
+    description: Scanner image
+    default: ghcr.io/mickinsing/helm-visualiser:latest
+  registry-token:
+    description: Token to pull a private image (e.g. secrets.GITHUB_TOKEN with packages:read). Empty if the image is public
+    default: ""
+outputs:
+  report:
+    description: Path to the markdown report
+    value: ${{ steps.scan.outputs.report }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v4
+      with:
+        path: head
+    - uses: actions/checkout@v4
+      if: github.event_name == 'pull_request'
+      with:
+        ref: ${{ github.event.pull_request.base.sha }}
+        path: base
+    - name: Log in to registry
+      if: inputs.registry-token != ''
+      shell: bash
+      run: echo "${{ inputs.registry-token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+    - id: scan
+      name: Scan charts
+      shell: bash
+      run: |
+        args=(scan --head /work/head --charts-dir "${{ inputs.charts-dir }}" --out /work/helm-check.md)
+        [ -d base ] && args+=(--base /work/base)
+        [ -n "${{ inputs.kube-version }}" ] && args+=(--kube "${{ inputs.kube-version }}")
+        [ -n "${{ inputs.fail-under }}" ] && args+=(--fail-under "${{ inputs.fail-under }}")
+        [ -n "${{ inputs.fail-on-new }}" ] && args+=(--fail-on-new "${{ inputs.fail-on-new }}")
+        set +e
+        docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
+          --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/work" \
+          "${{ inputs.image }}" python /app/app/cli.py "${args[@]}"
+        code=$?
+        set -e
+        echo "code=$code" >> "$GITHUB_OUTPUT"
+        echo "report=$PWD/helm-check.md" >> "$GITHUB_OUTPUT"
+        cat helm-check.md >> "$GITHUB_STEP_SUMMARY" || true
+    - name: Comment on PR
+      if: inputs.comment == 'true' && github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      env:
+        REPORT: ${{ steps.scan.outputs.report }}
+      with:
+        script: |
+          const fs = require('fs');
+          const marker = '<!-- helm-visualiser -->';
+          const body = marker + '\n' + fs.readFileSync(process.env.REPORT, 'utf8');
+          const { owner, repo } = context.repo, issue_number = context.issue.number;
+          const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+          const mine = comments.find(c => c.body && c.body.startsWith(marker));
+          if (mine) await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body });
+          else await github.rest.issues.createComment({ owner, repo, issue_number, body });
+    - name: Apply thresholds
+      shell: bash
+      run: exit ${{ steps.scan.outputs.code }}

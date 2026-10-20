@@ -230,3 +230,78 @@ button.chip:hover{border-color:var(--acc);color:#fff} .chip i{font-style:normal;
 .node.von rect.box{stroke:var(--acc);stroke-width:2.4;fill:color-mix(in srgb,var(--acc) 32%,#262b34);filter:drop-shadow(0 0 12px var(--acc))}
 .edge.von{stroke:var(--acc);stroke-width:2.6;stroke-dasharray:8 6;animation:flow 1s linear infinite}
 .node .q{font-size:10px;font-weight:700;fill:#1b1f27}
+
+/* ---- open from git */
+.gitbox{margin-top:24px;padding-top:20px;border-top:1px solid var(--line);cursor:default;text-align:left}
+.gitbox .local-h{text-align:center}
+.gitbox .row{margin-bottom:8px}
+.git-url,.git-small{background:#14171d;border:1px solid var(--line2);border-radius:10px;color:var(--text);padding:9px 11px;font-family:var(--mono);font-size:12.5px}
+.git-url{width:100%} .git-small{flex:1;min-width:150px}
+.git-url:focus,.git-small:focus{outline:none;border-color:var(--blue)}
+.git-priv{margin-top:4px;font-size:12.5px;color:var(--muted)} .git-priv summary{cursor:pointer;margin-bottom:8px}
+#git-pick{margin-top:10px;padding:12px;border:1px solid var(--line2);border-radius:12px;background:#171b22}
+#git-pick select{width:100%;margin:6px 0 10px;background:#14171d;border:1px solid var(--line2);border-radius:10px;color:var(--text);padding:8px 10px;font-family:var(--mono);font-size:12.5px}
+.crumb a{color:inherit;text-decoration:none;border-bottom:1px dotted var(--dim)}
+
+/* ---- home: tabs + panels */
+.landing{display:flex;flex-direction:column;place-items:initial;overflow:hidden;min-height:0}
+.hometabs{display:flex;gap:4px;align-items:center;padding:12px 20px;border-bottom:1px solid var(--line);background:var(--panel);flex:none;flex-wrap:wrap}
+.hometabs button,.hometabs a{background:none;border:0;border-radius:9px;padding:8px 14px;font-size:13.5px;color:var(--muted);text-decoration:none}
+.hometabs button:hover,.hometabs a:hover{color:#fff;background:#232933}
+.hometabs button.on{color:#fff;background:#262c36;box-shadow:0 0 0 1px var(--line2) inset}
+.stamp{margin-left:auto;font-size:11.5px;color:var(--dim)}
+.hpanel{flex:1;overflow:auto;padding:22px 26px;min-height:0}
+.hpanel.center{display:grid;place-items:center}
+.hp-h{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px}
+.hp-h h2{margin:0;font-size:20px;font-weight:600}
+.hp-sub{font-size:12.5px;color:var(--muted);margin-bottom:16px;line-height:1.6}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin:12px 0 18px}
+.card{background:#20252e;border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.card .v{font-size:22px;font-weight:600} .card .l{font-size:11.5px;color:var(--muted);margin-top:2px}
+.filters{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+.filters button{background:#20252e;border:1px solid var(--line2);border-radius:999px;padding:5px 12px;font-size:12.5px;color:#cfd4dd}
+.filters button.on{border-color:var(--blue);color:#fff;background:#17304c}
+.filters input{flex:1;min-width:180px;background:#14171d;border:1px solid var(--line2);border-radius:999px;color:var(--text);padding:6px 12px;font-size:12.5px}
+.rtbl{width:100%;border-collapse:collapse;font-size:12.8px}
+.rtbl th{text-align:left;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);font-weight:600;padding:8px;border-bottom:1px solid var(--line2);position:sticky;top:-22px;background:var(--panel)}
+.rtbl td{padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top;line-height:1.5}
+.rtbl tr.click{cursor:pointer} .rtbl tr.click:hover td{background:#20252e}
+.rtbl tr.hl td{background:rgba(30,155,255,.12)}
+.rid{font-family:var(--mono);font-size:11.5px;white-space:nowrap;color:#cfd4dd}
+.cat{font-size:10px;font-weight:700;padding:2px 7px;border-radius:8px;letter-spacing:.04em}
+.cat.CKS{background:rgba(182,92,255,.16);color:#d8a8ff} .cat.Kubernetes{background:rgba(30,155,255,.16);color:#8fcbff} .cat.Helm{background:rgba(47,211,181,.14);color:var(--teal)}
+.rtbl .why{color:#b8c0cc;font-size:12.3px} .rtbl .fixc{font-family:var(--mono);font-size:11.5px;color:#9fe0b0;margin-top:4px}
+.rtbl .refs a{color:var(--blue);font-size:11.5px;text-decoration:none;margin-right:8px;white-space:nowrap}
+.rate{font-family:var(--mono);font-size:12px} .rate i{display:block;height:4px;border-radius:2px;background:var(--high);margin-top:4px;max-width:80px}
+.scorepill{font-weight:700;font-family:var(--mono)} .sp-good{color:var(--green)} .sp-mid{color:var(--med)} .sp-bad{color:var(--high)}
+.empty{padding:30px;text-align:center;color:var(--muted);border:1px dashed var(--line2);border-radius:14px}
+.formrow{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 18px}
+.formrow input,.formrow select,.rtbl select{background:#14171d;border:1px solid var(--line2);border-radius:9px;color:var(--text);padding:7px 10px;font-family:var(--mono);font-size:12.3px}
+.formrow input.wide{flex:1;min-width:260px}
+.mini{background:#262c36;border:1px solid var(--line2);border-radius:8px;padding:4px 9px;font-size:12px}
+.mini.danger{color:var(--crit)}
+.chk{display:inline-flex;gap:6px;align-items:center;cursor:pointer}
+#histnote{font-size:12px}
+/* findings: rules + exceptions */
+.find .rchip{font-family:var(--mono);font-size:10.5px;padding:1px 6px;border-radius:6px;background:#2a303b;color:#cfd4dd;text-decoration:none;white-space:nowrap}
+.find .rchip:hover{color:#fff;background:#33404f}
+.find.accepted{opacity:.62;border-left-color:var(--green)} .find.accepted .hd span:last-child{text-decoration:line-through}
+.find .acc{font-size:12px;color:var(--green);margin-top:6px} .find .expd{font-size:12px;color:var(--med);margin-top:6px}
+.exc-tbl{width:100%;border-collapse:collapse;font-size:12px;margin:8px 0 14px}
+.exc-tbl td{padding:6px;border-bottom:1px solid var(--line);vertical-align:top}
+.recnote{font-size:11px;color:var(--dim);margin-top:4px}
+/* compare */
+.cmp-score{display:flex;gap:18px;align-items:center;margin:12px 0}
+.cmp-score .big{font-size:28px;font-weight:700;font-family:var(--mono)}
+.cmp-list{margin:8px 0 14px;padding:0;list-style:none;font-size:12.8px}
+.cmp-list li{padding:7px 0;border-bottom:1px solid var(--line);line-height:1.45}
+.cmp-list .where{font-family:var(--mono);font-size:11px;color:var(--muted)}
+.delta-up{color:var(--green)} .delta-down{color:var(--crit)}
+/* diagram zoom */
+.zoombar{position:absolute;left:20px;bottom:16px;z-index:3;display:flex;gap:4px;background:rgba(27,31,39,.88);border:1px solid var(--line2);border-radius:12px;padding:4px}
+.zoombar button{width:32px;height:30px;border-radius:8px;background:transparent;border:0;color:#cfd4dd;font-size:15px}
+.zoombar button:hover{background:#2a303b;color:#fff}
+.zoombar .zl{font-size:11px;color:var(--muted);min-width:42px;text-align:center;align-self:center;font-variant-numeric:tabular-nums}
+.graph{cursor:grab;touch-action:none} .graph.panning{cursor:grabbing}
+.work.big{grid-template-rows:minmax(300px,72%) 1fr}
+.exc{font-size:12.3px;padding:8px 0;border-bottom:1px solid var(--line);line-height:1.5}.exc .rid{margin:0 4px}

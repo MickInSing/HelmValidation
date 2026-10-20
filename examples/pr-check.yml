@@ -1,0 +1,20 @@
+# Copy into a chart repository as .github/workflows/helm-check.yml
+name: helm-check
+on:
+  pull_request:
+    paths: ["**/Chart.yaml", "**/values*.yaml", "**/templates/**", ".helm-visualiser.yaml"]
+permissions:
+  contents: read
+  pull-requests: write   # post the report comment
+  packages: read         # pull the scanner image if it's private
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: MickInSing/helm-visualiser@main
+        with:
+          charts-dir: charts
+          kube-version: "1.36"
+          fail-on-new: high
+          # fail-under: 70
+          registry-token: ${{ secrets.GITHUB_TOKEN }}   # drop if the image is public

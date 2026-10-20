@@ -36,15 +36,54 @@ resources:
     cpu: 50m
     memory: 96Mi
   limits:
-    memory: 384Mi
+    memory: 512Mi
 
 app:
   maxUploadMB: 20
   helmTimeoutSeconds: 30
 
+# Scan history (summaries only, never chart contents). Needed for History, Watched repos and Grafana.
+database:
+  enabled: true
+  # cnpg     = create a CloudNativePG Cluster (operator must be installed: https://cloudnative-pg.io)
+  # external = use an existing Postgres; DATABASE_URL comes from the Secret below
+  mode: cnpg
+  retentionDays: 180
+  cnpg:
+    instances: 1             # 3 for HA
+    imageName: ""            # default: the operator's PostgreSQL image
+    storage:
+      size: 2Gi
+      storageClass: ""
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits: { memory: 512Mi }
+    backup: {}               # see CNPG docs (barmanObjectStore / plugin) to enable backups
+  external:
+    secretName: ""           # Secret holding a postgresql:// URL
+    secretKey: uri
+
+# Background rescans for watched repos. Safe with several replicas (FOR UPDATE SKIP LOCKED).
+scheduler:
+  enabled: true
+
+# Link shown in the UI header (e.g. your Grafana dashboard). Empty = hidden.
+grafanaUrl: ""
+
+# "Open from Git": which hosts the server may clone from, and an optional default token for private repos.
+git:
+  allowedHosts: [github.com, gitlab.com, bitbucket.org]
+  timeoutSeconds: 60
+  maxRepoMB: 200
+  # Existing Secret holding a read-only token, e.g.
+  #   kubectl -n helm-visualiser create secret generic helm-visualiser-git --from-literal=token=<PAT>
+  tokenSecret:
+    name: ""
+    key: token
+
 # scratch space for uploads and helm caches (the root filesystem is read-only)
 tmp:
-  sizeLimit: 256Mi
+  sizeLimit: 768Mi
 
 service:
   type: ClusterIP
@@ -67,5 +106,13 @@ networkPolicy:
   # Namespaces allowed to reach the UI (e.g. your ingress controller). Empty = same namespace only.
   allowFromNamespaces: []
   #  - ingress-nginx
-  # The app needs no outbound access. Charts with remote dependencies must vendor charts/.
-  allowEgress: false
+  # Outbound access. Only HTTPS (git clones, chart dependencies) + DNS. Set gitEgress=false for a fully offline
+  # instance (then only uploads work, and charts with remote dependencies must vendor charts/).
+  gitEgress: true
+  # Where HTTPS may go. Default: the internet but not private ranges (blocks reaching in-cluster services).
+  # Add your GitHub Enterprise / internal Git CIDR here if it's on a private network.
+  egressCIDRs:
+    - cidr: 0.0.0.0/0
+      except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10]
+  allowEgress: false   # true = unrestricted egress (not recommended)
+  databaseCIDRs: []    # database.mode=external: where Postgres lives, e.g. [10.20.0.15/32]

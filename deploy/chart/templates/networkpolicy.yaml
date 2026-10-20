@@ -23,6 +23,47 @@ spec:
   {{- if .Values.networkPolicy.allowEgress }}
   egress:
     - {}
+  {{- else if or .Values.networkPolicy.gitEgress .Values.database.enabled }}
+  egress:
+    {{- if .Values.database.enabled }}
+    # Postgres (CNPG pods in this namespace, or the external DB's CIDRs)
+    - to:
+        {{- if eq .Values.database.mode "cnpg" }}
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: {{ include "helm-visualiser.fullname" . }}-db
+        {{- else }}
+        {{- range .Values.networkPolicy.databaseCIDRs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+        {{- end }}
+      ports:
+        - { port: 5432, protocol: TCP }
+    {{- end }}
+    # DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+    {{- if .Values.networkPolicy.gitEgress }}
+    # HTTPS to Git hosts / chart repositories
+    - to:
+        {{- range .Values.networkPolicy.egressCIDRs }}
+        - ipBlock:
+            cidr: {{ .cidr }}
+            {{- with .except }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+        {{- end }}
+      ports:
+        - { port: 443, protocol: TCP }
+    {{- end }}
   {{- else }}
   egress: []
   {{- end }}

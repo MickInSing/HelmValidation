@@ -1,0 +1,32 @@
+{{- if and .Values.database.enabled (eq .Values.database.mode "cnpg") }}
+# Postgres for scan history, managed by CloudNativePG (the operator must be installed in the cluster).
+# CNPG creates the Secret <name>-app with keys username / password / host / uri.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ include "helm-visualiser.fullname" . }}-db
+  labels:
+    {{- include "helm-visualiser.labels" . | nindent 4 }}
+spec:
+  instances: {{ .Values.database.cnpg.instances }}
+  {{- with .Values.database.cnpg.imageName }}
+  imageName: {{ . }}
+  {{- end }}
+  bootstrap:
+    initdb:
+      database: helmviz
+      owner: helmviz
+  storage:
+    size: {{ .Values.database.cnpg.storage.size }}
+    {{- with .Values.database.cnpg.storage.storageClass }}
+    storageClass: {{ . }}
+    {{- end }}
+  {{- with .Values.database.cnpg.resources }}
+  resources:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.database.cnpg.backup }}
+  backup:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

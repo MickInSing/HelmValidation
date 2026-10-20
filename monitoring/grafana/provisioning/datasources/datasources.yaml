@@ -1,0 +1,19 @@
+apiVersion: 1
+datasources:
+  - name: Helm visualiser history
+    uid: helmviz-pg
+    type: grafana-postgresql-datasource
+    url: postgres:5432
+    user: grafana_ro
+    isDefault: true
+    jsonData:
+      database: helmviz
+      sslmode: disable
+      postgresVersion: 1700
+      timescaledb: false
+    secureJsonData:
+      password: $HELMVIZ_GRAFANA_DB_PASSWORD
+  - name: Helm visualiser metrics
+    uid: helmviz-prom
+    type: prometheus
+    url: http://prometheus:9090

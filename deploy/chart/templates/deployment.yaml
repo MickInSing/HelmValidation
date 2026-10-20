@@ -35,6 +35,39 @@ spec:
               value: {{ .Values.app.maxUploadMB | quote }}
             - name: HELM_TIMEOUT
               value: {{ .Values.app.helmTimeoutSeconds | quote }}
+            {{- if .Values.database.enabled }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  {{- if eq .Values.database.mode "cnpg" }}
+                  name: {{ include "helm-visualiser.fullname" . }}-db-app
+                  key: uri
+                  {{- else }}
+                  name: {{ required "database.external.secretName is required when database.mode=external" .Values.database.external.secretName }}
+                  key: {{ .Values.database.external.secretKey }}
+                  {{- end }}
+            - name: SCAN_RETENTION_DAYS
+              value: {{ .Values.database.retentionDays | quote }}
+            {{- end }}
+            - name: SCHEDULER
+              value: {{ ternary "on" "off" .Values.scheduler.enabled | quote }}
+            {{- with .Values.grafanaUrl }}
+            - name: GRAFANA_URL
+              value: {{ . | quote }}
+            {{- end }}
+            - name: GIT_ALLOWED_HOSTS
+              value: {{ join "," .Values.git.allowedHosts | quote }}
+            - name: GIT_TIMEOUT
+              value: {{ .Values.git.timeoutSeconds | quote }}
+            - name: GIT_MAX_MB
+              value: {{ .Values.git.maxRepoMB | quote }}
+            {{- with .Values.git.tokenSecret.name }}
+            - name: GIT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $.Values.git.tokenSecret.key }}
+            {{- end }}
           ports:
             - name: http
               containerPort: 8080

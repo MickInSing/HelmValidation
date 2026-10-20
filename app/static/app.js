@@ -46,7 +46,8 @@ function hdrs(extra = {}) {
   return Object.assign({ "X-Release": relIn.value.trim(), "X-Namespace": nsIn.value.trim(),
     "X-Values": b64(vals.text), "X-Value-Files": vals.files.join(","),
     "X-Set": b64(Object.entries(vals.answers).filter(([, v]) => v !== "").map(([k, v]) => `${k}=${v}`).join("\n")),
-    "X-Bypass": vals.bypass ? "1" : "0" }, extra);
+    "X-Bypass": vals.bypass ? "1" : "0",
+    "X-Kube-Version": $("#kube").value || "", "X-No-Record": $("#norec").checked ? "1" : "0" }, extra);
 }
 // Every way of loading a chart goes through run(), so "Re-render" can repeat it with new values.
 function run(source, label, fresh = true) {
@@ -55,6 +56,8 @@ function run(source, label, fresh = true) {
   const req = () => source.kind === "blob"
     ? fetch("/api/analyze", { method: "POST", body: source.blob, headers: hdrs({ "X-Filename": source.name, "Content-Type": "application/octet-stream" }) })
     : source.kind === "local" ? fetch("/api/local/analyze?path=" + encodeURIComponent(source.path), { headers: hdrs() })
+    : source.kind === "git" ? fetch(`/api/git?url=${encodeURIComponent(source.url)}&ref=${encodeURIComponent(source.ref || "")}&path=${encodeURIComponent(source.path || "")}`,
+        { headers: hdrs(source.token ? { "X-Git-Token": source.token } : {}) })
     : fetch("/api/sample", { headers: hdrs() });
   analyse(req, label);
 }
@@ -66,7 +69,10 @@ async function analyse(makeRequest, label) {
     const txt = await res.text();
     let j; try { j = JSON.parse(txt); } catch { throw new Error(`Server returned ${res.status}: ${txt.slice(0, 200)}`); }
     if (!res.ok) throw new Error(j.error || res.statusText);
-    status(""); load(j);
+    status("");
+    if (j.pick) return showPick(j);
+    $("#git-pick").classList.add("hidden");
+    load(j);
   } catch (e) {
     status("");
     if (D && !$("#work").classList.contains("hidden")) { openDrawer(); drawerErr(e.message || String(e)); }
@@ -143,13 +149,16 @@ $("#folder").onchange = (e) => {
   e.target.value = ""; uploadFolder(entries);
 };
 $("#btn-sample").onclick = (e) => { e.stopPropagation(); run({ kind: "sample" }, "Loading sample chart…"); };
-$("#btn-new").onclick = () => { closeDrawer(); $("#btn-values").classList.add("hidden"); $("#work").classList.add("hidden"); $("#landing").classList.remove("hidden"); $("#btn-new").classList.add("hidden"); showErr(""); };
+$("#btn-new").onclick = () => { closeDrawer(); $("#panel2").classList.add("hidden"); $("#btn-compare").classList.add("hidden"); $("#btn-watch").classList.add("hidden"); $("#btn-share").classList.add("hidden"); history.replaceState(null, "", location.pathname); $("#btn-values").classList.add("hidden"); $("#work").classList.add("hidden"); $("#landing").classList.remove("hidden"); $("#btn-new").classList.add("hidden"); showErr(""); };
 // --- charts from the folder mounted into the container (works even when the browser blocks uploads)
 async function refreshLocal() {
   const sel = $("#localsel"), hint = $("#localhint");
   try {
     const j = await (await fetch("/api/local")).json();
     $("#ver").textContent = `script loaded · server v${j.version}`;
+    applyInfo(j);
+    if (j.gitHosts) $("#git-hosts").textContent = `Allowed hosts: ${j.gitHosts.join(", ")}`;
+    if (j.gitServerToken) $("#git-srvtok").textContent = "This server also has its own token configured for private repos.";
     if (!j.mounted) { sel.innerHTML = `<option value="">No folder mounted</option>`; hint.textContent = "Mount a folder at /charts (see docker-compose.yml) to open charts without uploading."; hint.classList.remove("hidden"); return; }
     if (!j.charts.length) { sel.innerHTML = `<option value="">No charts found</option>`; hint.textContent = "Put chart folders (with Chart.yaml) or .tgz/.zip files in your mounted charts folder, then press ↻."; hint.classList.remove("hidden"); return; }
     hint.classList.add("hidden");
@@ -195,8 +204,11 @@ function load(data) {
   $("#landing").classList.add("hidden"); $("#work").classList.remove("hidden"); $("#btn-new").classList.remove("hidden");
   const c = D.chart;
   $("#crumb").innerHTML = `${esc(c.name)} <span>/</span> v${esc(c.version)} <span>/</span> release <b>${esc(D.release)}</b> in <b>${esc(D.namespace)}</b>`;
+  Z.keep = false;
   renderSide(); renderScore(); buildGraph(); go(curBy[view]);
   renderDrawer();
+  afterLoadSource();
+  gitButtons();
   if (D.renderError) openDrawer(); else closeDrawer();
 }
 
@@ -272,7 +284,7 @@ function renderSide() {
   let html = "", g = null;
   S().forEach((s, i) => {
     if (s.group !== g) { g = s.group; html += `<div class="grp">${esc(g)}</div>`; }
-    const bad = (s.id === "s-summary" ? [] : s.findings).filter((f) => f.sev === "critical" || f.sev === "high").length;
+    const bad = (s.id === "s-summary" ? [] : s.findings).filter((f) => (f.sev === "critical" || f.sev === "high") && !f.accepted).length;
     const badge = s.badge ? `<span class="c ${esc(s.badge.cls)}">${esc(s.badge.text)}</span>` : bad ? `<span class="b">${bad}</span>` : "";
     html += `<button class="step ${s.dim ? "dim" : ""}" data-i="${i}"><span class="n">${String(i + 1).padStart(2, "0")}</span><span class="t">${esc(s.title)}</span>${badge}<span class="r"></span></button>`;
   });
@@ -285,12 +297,12 @@ function renderScore() {
     $("#scorebox").classList.remove("hidden"); return;
   }
   const s = D.score, col = s >= 80 ? "var(--green)" : s >= 55 ? "var(--med)" : "var(--high)";
-  const counts = {}; D.findings.forEach((f) => (counts[f.sev] = (counts[f.sev] || 0) + 1));
+  const counts = {}; D.findings.forEach((f) => { if (!f.accepted) counts[f.sev] = (counts[f.sev] || 0) + 1; });
   const C = 2 * Math.PI * 22;
   $("#scorebox").innerHTML = `<svg class="ring" viewBox="0 0 56 56"><circle cx="28" cy="28" r="22" fill="none" stroke="#2c323d" stroke-width="6"/>
     <circle cx="28" cy="28" r="22" fill="none" stroke="${col}" stroke-width="6" stroke-linecap="round" stroke-dasharray="${(C * s) / 100} ${C}" transform="rotate(-90 28 28)"/>
     <text x="28" y="33" text-anchor="middle" fill="#fff" font-size="15" font-weight="700">${s}</text></svg>
-    <div><div class="lbl">Hardening score</div><div class="val">${D.findings.length} findings</div>
+    <div><div class="lbl">Hardening score</div><div class="val">${D.findings.filter((f) => !f.accepted).length} findings${D.accepted ? ` <span class="muted" style="font-size:11px">+${D.accepted} accepted</span>` : ""}</div>
     <div class="sevrow">${Object.keys(SEV_ORDER).filter((k) => counts[k]).map((k) => `<span class="pill ${k}">${counts[k]} ${k}</span>`).join("")}</div></div>`;
   $("#scorebox").classList.remove("hidden");
 }
@@ -302,20 +314,23 @@ function buildGraph() {
   const svg = $("#graph"), W = svg.clientWidth || 900, H = svg.clientHeight || 360;
   const tiers = [...new Set(D.nodes.map((r) => r.tier))].sort((a, b) => (a === 5 ? -1 : b === 5 ? 1 : a - b));
   const cols = {}; D.nodes.forEach((r) => (cols[r.tier] ||= []).push(r));
-  const x0 = 80, x1 = W - 80, top = 112, bot = H - 64;
+  const x0 = 80, top = 112, bot = H - 64;
+  let x1 = W - 80;
   const pos = {};
   const size = 50, rowH = size + 44;                       // node + two label lines
   const cap = Math.max(1, Math.floor((bot - top) / rowH) + 1);
   const columns = [];                                     // a tier wraps into extra columns when it is too tall
   tiers.forEach((t) => { for (let i = 0; i < cols[t].length; i += cap) columns.push(cols[t].slice(i, i + cap)); });
+  const Wn = Math.max(W, columns.length * 175 + 160);   // big charts get a wider canvas instead of squashed nodes
+  x1 = Wn - 80;
   columns.forEach((list, ci) => {
-    const x = columns.length === 1 ? W / 2 : x0 + ((x1 - x0) * ci) / (columns.length - 1);
+    const x = columns.length === 1 ? Wn / 2 : x0 + ((x1 - x0) * ci) / (columns.length - 1);
     const n = list.length;
     const gap = n === 1 ? 0 : Math.min(110, (bot - top) / (n - 1));
     const start = (top + bot) / 2 - (gap * (n - 1)) / 2;
     list.forEach((r, i) => (pos[r.id] = { x, y: start + gap * i }));
   });
-  layout = { pos, size };
+  layout = { pos, size, W: Wn };
   $("#legend").innerHTML = tiers.map((t) => `<span><i style="background:${TIER_COLOR[t]}"></i>${TIER_NAME[t]}</span>`).join("");
 
   let edges = "", nodes = "";
@@ -326,7 +341,7 @@ function buildGraph() {
   D.nodes.forEach((r) => {
     const p = pos[r.id], h = size / 2, col = TIER_COLOR[r.tier] || "#888";
     const icon = r.ext ? EXT_ICON[r.category] || ICON.other : ICON[r.kind] || (WORKLOADS.has(r.kind) ? ICON.workload : ICON.other);
-    const bad = r.findings.map((id) => D.findById[id]).filter((f) => f.sev === "critical" || f.sev === "high").length;
+    const bad = r.findings.map((id) => D.findById[id]).filter((f) => (f.sev === "critical" || f.sev === "high") && !f.accepted).length;
     const nm = r.name.length > 18 ? r.name.slice(0, 17) + "…" : r.name;
     nodes += `<g class="node${r.ext ? " ext" : ""}" data-id="${r.id}" transform="translate(${p.x},${p.y})">
       <rect class="box" x="${-h}" y="${-h}" width="${size}" height="${size}" rx="${size * 0.22}" style="--c:${col}"/>
@@ -350,6 +365,7 @@ function buildGraph() {
     g.onmousemove = (e) => tip(e, g.dataset.id); g.onmouseleave = () => $("#tip").classList.add("hidden");
   });
   if (D.resources.length === 0) svg.insertAdjacentHTML("beforeend", `<text x="${D.externals.length ? W / 2 + 70 : W / 2}" y="${H / 2}" fill="#8a93a3" text-anchor="${D.externals.length ? "start" : "middle"}" font-size="14">No resources rendered${D.renderError ? ": the chart needs values from outside (see Values)" : ""}</text>`);
+  zoomSetup(Wn, H);
   paintGraph();
 }
 function route(a, b) {
@@ -384,11 +400,12 @@ function paintGraph() {
   if (id && layout.pos[id]) {
     const p = layout.pos[id], r = D.byId[id];
     halo.setAttribute("transform", `translate(${p.x},${p.y})`); halo.style.setProperty("--hc", TIER_COLOR[r.tier]); halo.setAttribute("opacity", 1);
-    const label = r.kind, w = label.length * 8 + 34, W = svg.clientWidth;
+    const label = r.kind, w = label.length * 8 + 34, W = layout.W;
     let tx = p.x - layout.size / 2 - w - 14; if (tx < 10) tx = p.x + layout.size / 2 + 14; if (tx + w > W - 10) tx = W - w - 10;
     tag.setAttribute("transform", `translate(${tx},${p.y - 16})`);
     tag.querySelector("rect").setAttribute("width", w); const t = tag.querySelector("text"); t.setAttribute("x", w / 2); t.textContent = label;
     tag.setAttribute("opacity", 1);
+    zoomFollow(p);
   } else { halo.setAttribute("opacity", 0); tag.setAttribute("opacity", 0); }
 }
 function tip(e, id) {
@@ -414,12 +431,13 @@ const VICON = {
 let vlayout = null;
 function setView(v) {
   if (!D || v === view) return;
-  view = v; document.body.dataset.view = v; seen = seenBy[v];
+  view = v; document.body.dataset.view = v; seen = seenBy[v]; Z.keep = false;
   document.querySelectorAll("#views button").forEach((b) => b.classList.toggle("on", b.dataset.v === v));
   $("#crumb").innerHTML = $("#crumb").innerHTML.replace(/ <span>\/<\/span> <b class="vname">.*?<\/b>$/, "") +
     (v === "chart" ? "" : ` <span>/</span> <b class="vname">${v === "helm" ? "Helm concepts" : "Infrastructure"}</b>`);
   document.querySelector(".seg").style.visibility = "visible";
   renderSide(); buildGraph(); go(curBy[v]);
+  const link = shareUrl(); if (link) history.replaceState(null, "", link);
 }
 document.querySelectorAll("#views button").forEach((b) => (b.onclick = () => setView(b.dataset.v)));
 
@@ -462,7 +480,7 @@ function vedges(edges, pos, extIds) {
   }).join("");
 }
 function buildPipeline() {
-  const svg = $("#graph"), W = svg.clientWidth || 900, H = svg.clientHeight || 360, G = D.helm.pipeline;
+  const svg = $("#graph"), W = Math.max(svg.clientWidth || 900, 980), H = Math.max(svg.clientHeight || 360, 380), G = D.helm.pipeline;
   const top = 70, h = H - top - 40, X = (x) => 50 + x * (W - 100), Y = (y) => top + y * h;
   const pos = Object.fromEntries(G.nodes.map((n) => [n.id, { x: X(n.x), y: Y(n.y) }]));
   const ext = new Set(G.nodes.filter((n) => n.ext).map((n) => n.id));
@@ -473,12 +491,18 @@ function buildPipeline() {
     const i = D.helm.steps.findIndex((s) => (s.nodes || []).includes(g.dataset.id) && !s.dim);
     go(i >= 0 ? i : D.helm.steps.findIndex((s) => (s.nodes || []).includes(g.dataset.id)));
   }));
+  zoomSetup(W, H);
   paintView(S()[cur] || {});
 }
 function buildInfra() {
-  const svg = $("#graph"), W = svg.clientWidth || 900, H = svg.clientHeight || 360, G = D.infra.diagram;
-  const top = 66, bottom = H - 12, sideW = Math.max(120, W * 0.14), x0 = sideW + 20, x1 = W - sideW - 20;
+  const svg = $("#graph"), G = D.infra.diagram;
   const lanes = G.lanes.filter((l) => G.nodes.some((n) => n.lane === l.id));
+  const vw = svg.clientWidth || 900, sideW = Math.max(130, vw * 0.14);
+  const maxLane = Math.max(1, ...lanes.map((l) => G.nodes.filter((n) => n.lane === l.id).length));
+  const maxSide = Math.max(1, ...G.side.map((sd) => G.nodes.filter((n) => n.lane === sd.id).length));
+  const W = Math.max(vw, 2 * sideW + 60 + maxLane * 130);
+  const H = Math.max(svg.clientHeight || 360, 66 + lanes.length * 112, 66 + 112 + maxSide * 78);
+  const top = 66, bottom = H - 12, x0 = sideW + 20, x1 = W - sideW - 20;
   const lh = (bottom - top) / Math.max(1, lanes.length), pos = {};
   const size = Math.max(36, Math.min(46, lh - 46));
   let out = "";
@@ -509,6 +533,7 @@ function buildInfra() {
     g.onmousemove = (e) => { const t = $("#tip"); t.innerHTML = `<b>${esc(n.l)}</b><br><span class="muted">${n.res ? "click: open in Chart view" : n.inferred ? "inferred, not declared in the chart" : n.ext ? "provided outside the chart" : ""}</span>`; t.style.left = e.clientX + 14 + "px"; t.style.top = e.clientY + 14 + "px"; t.classList.remove("hidden"); };
     g.onmouseleave = () => $("#tip").classList.add("hidden");
   });
+  zoomSetup(W, H);
   paintView(S()[cur] || {});
 }
 function paintView(s) {
@@ -556,11 +581,16 @@ function go(i) {
   renderCode(true);
 }
 function renderFindings(s) {
-  const list = (s.id === "s-summary" ? D.findings : s.findings).slice().sort((a, b) => SEV_ORDER[a.sev] - SEV_ORDER[b.sev]);
+  const list = (s.id === "s-summary" ? D.findings : s.findings).slice()
+    .sort((a, b) => (!!a.accepted - !!b.accepted) || SEV_ORDER[a.sev] - SEV_ORDER[b.sev]);
   const el = $("#ex-find");
-  if (!list.length) { el.innerHTML = s.node ? `<div class="ok">✓ No issues found on this resource.</div>` : ""; return; }
-  el.innerHTML = `<h3>${s.id === "s-summary" ? "All findings" : "Security & best-practice checks"}</h3>` + list.map((f, k) => `
-    <div class="find ${f.sev}"><div class="hd"><span class="pill ${f.sev}">${f.sev}</span><span>${esc(f.title)}</span></div>
+  const excs = s.id === "s-summary" ? exceptionsTable() : "";
+  if (!list.length) { el.innerHTML = excs + (s.node ? `<div class="ok">✓ No issues found on this resource.</div>` : ""); return; }
+  el.innerHTML = excs + `<h3>${s.id === "s-summary" ? "All findings" : "Security & best-practice checks"}</h3>` + list.map((f, k) => `
+    <div class="find ${f.sev} ${f.accepted ? "accepted" : ""}"><div class="hd"><span class="pill ${f.sev}">${f.sev}</span>
+      ${f.rule ? `<a class="rchip" href="/?home=rules&rule=${esc(f.rule)}" target="_blank" rel="noopener" title="${esc(RULES[f.rule]?.title || "Open in Best practices")}">${esc(f.rule)}</a>` : ""}<span>${esc(f.title)}</span></div>
+    ${f.accepted ? `<div class="acc">✓ Accepted: ${esc(f.accepted.reason)} · until ${esc(f.accepted.expires)}${f.accepted.owner ? " · " + esc(f.accepted.owner) : ""}</div>` : ""}
+    ${f.exceptionExpired ? `<div class="expd">⚠ An exception for this expired on ${esc(f.exceptionExpired)}; it counts again.</div>` : ""}
     ${s.id === "s-summary" && f.resource ? `<div class="muted" style="font-size:12px;margin-top:4px">${esc(D.byId[f.resource].kind)}/${esc(D.byId[f.resource].name)}</div>` : ""}
     <p>${md(f.detail, true)}</p>
     <div class="acts">${f.tpl ? `<button data-k="${k}" data-w="tpl">Show in template ↗</button><button data-k="${k}" data-w="out">Show rendered ↗</button>` : ""}
@@ -572,6 +602,21 @@ function renderFindings(s) {
     if (w === "go") return go(D.steps.findIndex((x) => x.node === f.resource));
     const loc = f[w]; if (loc) { if (s.id === "s-summary") jumpFinding(f, loc); else jump(loc.file, loc.line); }
   }));
+}
+let RULES = {};
+function exceptionsTable() {
+  const rows = D.exceptions || [];
+  let h = "";
+  if (rows.length) {
+    h += `<h3>Exceptions (.helm-visualiser.yaml)</h3>` + rows.map((r) => `<div class="exc">
+      <div><span class="st ${r.state === "active" ? "ok" : r.state === "expired" ? "warn" : "bad"}">${esc(r.state)}</span>
+        <span class="rid">${esc(r.rule)}</span> <span class="muted">${esc(r.resource)}${r.container ? " · " + esc(r.container) : ""}</span></div>
+      <div>${esc(r.reason || "")}${r.why ? ` <span class="${r.state === "active" ? "muted" : "expd"}">(${esc(r.why)})</span>` : ""}</div>
+      <div class="muted">${r.expires ? "until " + esc(r.expires) + " · " : ""}${r.matched} match${r.matched === 1 ? "" : "es"}${r.owner ? " · " + esc(r.owner) : ""}</div></div>`).join("");
+  }
+  h += `<div class="recnote">${D.recorded ? `Saved to scan history (#${D.scanId}). Summary only, no chart contents.` : "Not saved to scan history."}
+    Ruleset ${esc(D.ruleset || "")} · target Kubernetes v${esc(D.kubeTarget || "")}.</div>`;
+  return h;
 }
 function jumpFinding(f, loc) {
   if (loc.file === R) { fullOut = true; if (mode === "template") setMode("rendered", false); } else { file = loc.file; if (mode === "rendered") setMode("template", false); }
@@ -718,5 +763,306 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "t") setMode({ template: "rendered", rendered: "split", split: "template" }[mode]);
 });
 
+// ---------------------------------------------------------------- open from git + shareable links
+function openGit(extra = {}) {
+  const url = $("#git-url").value.trim();
+  if (!url) { showErr("Paste a repository address first."); $("#git-url").focus(); return; }
+  const src = { kind: "git", url, ref: $("#git-ref").value.trim(), path: $("#git-path").value.trim(), token: $("#git-token").value.trim(), ...extra };
+  run(src, `Fetching ${url.replace(/^https?:\/\//, "")}…`);
+}
+$("#btn-git").onclick = (e) => { e.stopPropagation(); openGit(); };
+["#git-url", "#git-ref", "#git-path", "#git-token"].forEach((id) => {
+  $(id).addEventListener("click", (e) => e.stopPropagation());
+  $(id).addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") openGit(); });
+});
+$(".gitbox").addEventListener("click", (e) => e.stopPropagation());
+function showPick(j) {
+  const el = $("#git-pick");
+  el.innerHTML = `<div class="local-h">${j.pick.length} charts in <b>${esc(j.source.repo)}</b>@${esc(j.source.commit)}. Pick one:</div>
+    <select id="git-picksel">${j.pick.map((p) => `<option>${esc(p)}</option>`).join("")}</select>
+    <button id="git-pickgo" class="primary">Open chart</button>`;
+  el.classList.remove("hidden");
+  $("#git-pickgo").onclick = (e) => { e.stopPropagation(); const p = $("#git-picksel").value; $("#git-path").value = p; run({ ...src, path: p }, `Analysing ${p}…`); };
+  el.onclick = (e) => e.stopPropagation();
+}
+function shareUrl() {
+  if (!D || !D.source || D.source.type !== "git") return null;
+  const q = new URLSearchParams({ git: D.source.url });
+  if (D.source.ref && D.source.ref !== "default branch") q.set("ref", D.source.ref);
+  if (D.source.path) q.set("path", D.source.path);
+  if (view !== "chart") q.set("view", view);
+  return `${location.origin}${location.pathname}?${q}`;
+}
+function afterLoadSource() {
+  const link = shareUrl();
+  $("#btn-share").classList.toggle("hidden", !link);
+  if (link) {
+    history.replaceState(null, "", link);
+    const s = D.source;
+    $("#crumb").insertAdjacentHTML("afterbegin", `<a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer" title="Open on ${esc(s.repo.split("/")[0])}">${esc(s.repo.split("/").slice(1).join("/"))}@${esc(s.commit)}</a> <span>/</span> `);
+  }
+}
+$("#btn-share").onclick = async () => {
+  const link = shareUrl(); if (!link) return;
+  try { await navigator.clipboard.writeText(link); $("#btn-share").textContent = "Link copied ✓"; }
+  catch { window.prompt("Copy this link:", link); }
+  setTimeout(() => ($("#btn-share").textContent = "Share link"), 1800);
+};
+// deep link: ?git=<repo web address>&ref=&path=&view=
+(() => {
+  const q = new URLSearchParams(location.search);
+  if (!q.get("git")) return;
+  $("#git-url").value = q.get("git"); $("#git-ref").value = q.get("ref") || ""; $("#git-path").value = q.get("path") || "";
+  if (["helm", "infra"].includes(q.get("view"))) { view = q.get("view"); document.body.dataset.view = view;
+    document.querySelectorAll("#views button").forEach((b) => b.classList.toggle("on", b.dataset.v === view)); }
+  openGit();
+})();
+
+// ================================================================ v8: home tabs, catalog, history, watch, compare, zoom
+let INFO = null;
+const SEVS5 = ["critical", "high", "medium", "low", "info"];
+const scoreCls = (s) => (s == null ? "" : s >= 80 ? "sp-good" : s >= 55 ? "sp-mid" : "sp-bad");
+const ago = (iso) => {
+  if (!iso) return "never";
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (s < 60) return "just now";
+  return s < 60 ? "just now" : s < 3600 ? `${Math.round(s / 60)} min ago` : s < 86400 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`;
+};
+const when = (iso) => (iso ? new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "–");
+async function api(path, opts = {}) {
+  const r = await fetch(path, opts);
+  const t = await r.text();
+  let j; try { j = JSON.parse(t); } catch { throw new Error(`${r.status}: ${t.slice(0, 160)}`); }
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+const post = (path, body, method = "POST") => api(path, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+
+function applyInfo(j) {
+  INFO = j;
+  const fill = (sel) => { const el = $(sel); if (!el || !j.kubeTargets) return; const cur = el.value || j.kubeDefault;
+    el.innerHTML = j.kubeTargets.slice().reverse().map((v) => `<option ${v === cur ? "selected" : ""}>${v}</option>`).join(""); };
+  fill("#kube"); fill("#dr-kube");
+  if (j.grafana) { $("#grafana-link").href = j.grafana; $("#grafana-link").classList.remove("hidden"); }
+  const rs = j.ruleset || {};
+  $("#rules-stamp").textContent = `Ruleset ${rs.version || "?"} · updated ${rs.updated || "?"} · Helm ${j.helm || "?"} · app v${j.version}${j.build && j.build.gitSha !== "dev" ? " (" + j.build.gitSha + ")" : ""}`;
+  $("#histnote").textContent = j.db && j.db.enabled ? (j.db.up ? `History on: summaries only, kept ${j.db.retentionDays} days.` : "History database unreachable: scans still work.") : "History off (no database configured).";
+  $("#norec").disabled = !(j.db && j.db.enabled);
+}
+$("#dr-kube").onchange = () => { $("#kube").value = $("#dr-kube").value; };
+$("#kube").onchange = () => { $("#dr-kube").value = $("#kube").value; };
+
+// ---- home tabs
+let homeTab = "scan";
+function setHome(t, opts = {}) {
+  homeTab = t;
+  document.querySelectorAll(".hometabs button").forEach((b) => b.classList.toggle("on", b.dataset.home === t));
+  ["scan", "rules", "history", "watch"].forEach((x) => $("#hp-" + x).classList.toggle("hidden", x !== t));
+  if (t === "rules") renderRules(opts.rule);
+  if (t === "history") renderHistory();
+  if (t === "watch") renderWatch();
+}
+document.querySelectorAll(".hometabs button").forEach((b) => (b.onclick = () => setHome(b.dataset.home)));
+function goHome(t) { if (!$("#landing").classList.contains("hidden")) return setHome(t); $("#btn-new").click(); setHome(t); }
+
+// ---- Best practices (rules catalog)
+let CAT = null, catFilter = "all", catQuery = "";
+async function renderRules(focus) {
+  const el = $("#hp-rules");
+  try { CAT = CAT || (await api("/api/rules")); } catch (e) { el.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  RULES = Object.fromEntries(CAT.rules.map((r) => [r.id, r]));
+  const rs = CAT.ruleset, st = CAT.stats, info = CAT.info;
+  const cats = ["CKS", "Kubernetes", "Helm"];
+  const head = `<div class="hp-h"><h2>Helm &amp; Kubernetes best practices</h2><span class="muted">Ruleset <b>${esc(rs.version)}</b> · last updated <b>${esc(rs.updated)}</b></span></div>
+    <div class="hp-sub">${CAT.rules.length} checks across CKS (${CAT.rules.filter((r) => r.category === "CKS").length}), Kubernetes (${CAT.rules.filter((r) => r.category === "Kubernetes").length}) and Helm (${CAT.rules.filter((r) => r.category === "Helm").length}).
+      Running with Helm ${esc(info.helm)}; deprecated-API data: ${esc(rs.sources.kubernetes.split("(")[1]?.replace(")", "") || "")}.
+      Sources: ${esc(rs.sources.kubernetes.split(" (")[0])}; ${esc(rs.sources.helm)}; ${esc(rs.sources.cks)}.
+      Every scan records the ruleset version, so scores from different rulesets aren't compared as if they were equal.</div>
+    ${st ? `<div class="cards">
+      <div class="card"><div class="v">${st.totals.scans ?? 0}</div><div class="l">scans, last 30 days</div></div>
+      <div class="card"><div class="v">${st.totals.repos ?? 0}</div><div class="l">repositories</div></div>
+      <div class="card"><div class="v ${scoreCls(st.totals.avg_score)}">${st.totals.avg_score ?? "–"}</div><div class="l">average score</div></div>
+      <div class="card"><div class="v" style="font-size:15px">${st.topRules[0] ? esc(st.topRules[0].rule_id) : "–"}</div><div class="l">most-failed rule</div></div></div>` : ""}
+    <div class="filters">${["all", ...cats].map((c) => `<button data-c="${c}" class="${catFilter === c ? "on" : ""}">${c === "all" ? "All" : c}</button>`).join("")}
+      <input id="rq" placeholder="Search rules (ID, title, fix…)" value="${esc(catQuery)}"></div>`;
+  const rows = CAT.rules.filter((r) => (catFilter === "all" || r.category === catFilter) &&
+    (!catQuery || (r.id + r.title + r.why + r.fix + r.domain).toLowerCase().includes(catQuery.toLowerCase())));
+  const rate = (id) => (st && st.failRate ? st.failRate[id] : undefined);
+  el.innerHTML = head + `<table class="rtbl"><thead><tr><th>Rule</th><th>Severity</th><th>Check</th><th>Fails in</th><th>Updated</th></tr></thead><tbody>` +
+    rows.map((r) => `<tr id="rule-${esc(r.id)}" class="${r.id === focus ? "hl" : ""}">
+      <td><div class="rid">${esc(r.id)}</div><span class="cat ${esc(r.category)}">${esc(r.category)}</span>${r.domain ? `<div class="muted" style="font-size:11px;margin-top:4px">${esc(r.domain)}</div>` : ""}</td>
+      <td><span class="pill ${esc(r.severity)}">${esc(r.severity)}</span></td>
+      <td><b>${esc(r.title)}</b><div class="why">${esc(r.why)}</div><div class="fixc">${esc(r.fix)}</div>
+        <div class="refs">${r.refs.map((x) => `<a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">${esc(x.title)} ↗</a>`).join("")}</div></td>
+      <td class="rate">${rate(r.id) === undefined ? '<span class="muted">–</span>' : `${rate(r.id)}% of scans<i style="width:${Math.max(2, rate(r.id) * 0.8)}px"></i>`}</td>
+      <td class="muted" style="white-space:nowrap">${esc(r.updated)}</td></tr>`).join("") + `</tbody></table>` +
+    (rows.length ? "" : `<div class="empty">No rules match.</div>`);
+  el.querySelectorAll(".filters button").forEach((b) => (b.onclick = () => { catFilter = b.dataset.c; renderRules(); }));
+  const q = $("#rq"); q.oninput = () => { catQuery = q.value; const pos = q.selectionStart; renderRules(); const n = $("#rq"); n.focus(); n.setSelectionRange(pos, pos); };
+  if (focus) setTimeout(() => $("#rule-" + CSS.escape(focus))?.scrollIntoView({ block: "center" }), 50);
+}
+
+// ---- History
+async function renderHistory() {
+  const el = $("#hp-history");
+  el.innerHTML = `<div class="hp-h"><h2>Scan history</h2><span class="muted">Summaries only: repo, ref, chart name, score, rule IDs. Never chart contents, values or names.</span></div>`;
+  if (!INFO?.db?.enabled) { el.innerHTML += `<div class="empty">History is off. Start the stack with <code>docker compose up</code> (includes Postgres) or set <code>DATABASE_URL</code>.</div>`; return; }
+  let rows;
+  try { rows = await api("/api/history?limit=200"); } catch (e) { el.innerHTML += `<div class="empty">${esc(e.message)}</div>`; return; }
+  if (!rows.length) { el.innerHTML += `<div class="empty">No scans recorded yet.</div>`; return; }
+  el.innerHTML += `<div class="filters"><input id="hq" placeholder="Filter by repo or chart"></div><table class="rtbl" id="htbl"><thead><tr><th>When</th><th>Repository / chart</th><th>Ref</th><th>Score</th><th>Findings</th><th>Status</th><th>Trigger</th></tr></thead><tbody>` +
+    rows.map((r, i) => `<tr class="${r.source_type === "git" ? "click" : ""}" data-i="${i}" data-s="${esc((r.repo + " " + (r.chart_path || "") + " " + (r.chart_name || "")).toLowerCase())}">
+      <td title="${esc(r.scanned_at)}">${ago(r.scanned_at)}</td>
+      <td><b>${esc(r.repo)}</b>${r.chart_path ? `<span class="muted"> / ${esc(r.chart_path)}</span>` : ""}<div class="muted" style="font-size:11.5px">${esc(r.chart_name || "")} ${esc(r.chart_version || "")}</div></td>
+      <td class="rid">${esc(r.ref || "")}${r.commit ? `<div class="muted">${esc(r.commit)}</div>` : ""}</td>
+      <td class="scorepill ${scoreCls(r.score)}">${r.score ?? "–"}</td>
+      <td>${SEVS5.slice(0, 4).filter((s) => r["n_" + s]).map((s) => `<span class="pill ${s}">${r["n_" + s]} ${s}</span>`).join(" ") || '<span class="muted">none</span>'}${r.n_accepted ? ` <span class="muted">+${r.n_accepted} accepted</span>` : ""}</td>
+      <td>${r.status === "ok" ? '<span class="st ok">ok</span>' : `<span class="st ${r.status === "error" ? "bad" : "warn"}">${esc(r.status)}</span><div class="muted" style="font-size:11px">${esc(r.error_class || "")}</div>`}</td>
+      <td class="muted">${esc(r.trigger)}<div style="font-size:11px">rules ${esc(r.ruleset_version || "")}</div></td></tr>`).join("") + `</tbody></table>`;
+  $("#hq").oninput = (e) => { const q = e.target.value.toLowerCase(); el.querySelectorAll("#htbl tbody tr").forEach((tr) => (tr.style.display = tr.dataset.s.includes(q) ? "" : "none")); };
+  el.querySelectorAll("tr.click").forEach((tr) => (tr.onclick = () => {
+    const r = rows[+tr.dataset.i];
+    $("#git-url").value = "https://" + r.repo; $("#git-ref").value = r.ref && r.ref !== "default branch" ? r.ref : ""; $("#git-path").value = r.chart_path || "";
+    setHome("scan"); openGit();
+  }));
+}
+
+// ---- Watched repos
+async function renderWatch() {
+  const el = $("#hp-watch");
+  const freqs = INFO?.frequencies || ["hourly", "6h", "daily", "weekly"];
+  el.innerHTML = `<div class="hp-h"><h2>Watched repositories</h2><span class="muted">Optional: rescan a chart on a schedule to track drift and new rules.</span></div>`;
+  if (!INFO?.db?.enabled) { el.innerHTML += `<div class="empty">Watching needs the scan-history database (included in <code>docker compose up</code>).</div>`; return; }
+  el.innerHTML += `<div class="formrow"><input id="w-url" class="wide" placeholder="https://github.com/org/repo/tree/main/charts/app"><input id="w-ref" placeholder="branch (optional)"><input id="w-path" placeholder="chart folder (optional)">
+    <select id="w-freq">${freqs.map((f) => `<option ${f === "daily" ? "selected" : ""}>${f}</option>`).join("")}</select><button id="w-add" class="primary">Watch</button></div>
+    <div class="hp-sub">Scheduled scans use the server's own Git token (<code>GIT_TOKEN</code>) for private repos${INFO.gitServerToken ? " (configured)" : " (not configured: public repos only)"}. They're recorded with trigger <code>schedule</code>.</div><div id="w-list"></div>`;
+  $("#w-add").onclick = async () => {
+    try { await post("/api/repos", { url: $("#w-url").value.trim(), ref: $("#w-ref").value.trim(), path: $("#w-path").value.trim(), frequency: $("#w-freq").value, kubeTarget: $("#kube").value }); renderWatch(); }
+    catch (e) { alert(e.message); }
+  };
+  let rows;
+  try { rows = await api("/api/repos"); } catch (e) { $("#w-list").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  if (!rows.length) { $("#w-list").innerHTML = `<div class="empty">Nothing watched yet. Add a repository above, or use <b>Watch</b> on an open Git chart.</div>`; return; }
+  $("#w-list").innerHTML = `<table class="rtbl"><thead><tr><th>Repository / chart</th><th>Every</th><th>Last scan</th><th>Score</th><th>Next</th><th></th></tr></thead><tbody>` +
+    rows.map((r) => `<tr data-id="${r.id}"><td><b>${esc(r.url.replace(/^https:\/\//, ""))}</b><div class="muted rid">${esc(r.ref || "default branch")}${r.path ? " · " + esc(r.path) : ""}</div></td>
+      <td><select data-f="${r.id}">${freqs.map((f) => `<option ${f === r.frequency ? "selected" : ""}>${f}</option>`).join("")}</select>
+        <label class="chk" style="margin-left:6px"><input type="checkbox" data-e="${r.id}" ${r.enabled ? "checked" : ""}> on</label></td>
+      <td>${ago(r.last_scan_at)}${r.last_status && r.last_status !== "ok" ? `<div class="st ${r.last_status === "error" ? "bad" : "warn"}" style="display:inline-block;margin-top:3px">${esc(r.last_error_class || r.last_status)}</div>` : ""}</td>
+      <td class="scorepill ${scoreCls(r.last_score)}">${r.last_score ?? "–"}</td>
+      <td class="muted">${r.enabled ? when(r.next_run_at) : "paused"}</td>
+      <td style="white-space:nowrap"><button class="mini" data-open="${r.id}">Open</button> <button class="mini" data-run="${r.id}">Run now</button> <button class="mini danger" data-del="${r.id}">Remove</button></td></tr>`).join("") + `</tbody></table>`;
+  const L = $("#w-list"), byId = Object.fromEntries(rows.map((r) => [r.id, r]));
+  L.querySelectorAll("[data-f]").forEach((s) => (s.onchange = () => post(`/api/repos/${s.dataset.f}`, { frequency: s.value }).catch((e) => alert(e.message))));
+  L.querySelectorAll("[data-e]").forEach((c) => (c.onchange = () => post(`/api/repos/${c.dataset.e}`, { enabled: c.checked }).then(renderWatch, (e) => alert(e.message))));
+  L.querySelectorAll("[data-run]").forEach((b) => (b.onclick = () => post(`/api/repos/${b.dataset.run}/run`).then(() => { b.textContent = "Queued ✓"; }, (e) => alert(e.message))));
+  L.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => { if (confirm("Stop watching this repository? Its history is kept.")) api(`/api/repos/${b.dataset.del}`, { method: "DELETE" }).then(renderWatch, (e) => alert(e.message)); }));
+  L.querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => { const r = byId[b.dataset.open]; $("#git-url").value = r.url; $("#git-ref").value = r.ref; $("#git-path").value = r.path; setHome("scan"); openGit(); }));
+}
+
+// ---- side panel (Compare / Watch)
+function panel2(title, html) { $("#p2-title").textContent = title; $("#p2-body").innerHTML = html; $("#panel2").classList.remove("hidden"); closeDrawer(); }
+$("#p2-close").onclick = () => $("#panel2").classList.add("hidden");
+function gitButtons() {
+  const g = D && D.source && D.source.type === "git";
+  $("#btn-compare").classList.toggle("hidden", !g);
+  $("#btn-watch").classList.toggle("hidden", !g || !INFO?.db?.enabled);
+}
+$("#btn-compare").onclick = () => {
+  const s = D.source;
+  panel2("Compare", `<p class="muted" style="font-size:12.5px">Scan <b>${esc(s.repo)}</b>${s.path ? " / " + esc(s.path) : ""} at another branch, tag or commit and see what changed.
+      Findings match on rule + resource + container, so a renamed resource shows as fixed + new.</p>
+    <div class="formrow"><input id="c-base" placeholder="base: e.g. main, v1.2.0, a1b2c3d" value="${esc(s.ref && s.ref !== "main" ? "main" : "")}">
+      <span class="muted" style="align-self:center">→</span><input id="c-head" value="${esc(s.ref && s.ref !== "default branch" ? s.ref : "")}" placeholder="head (current)">
+      <button id="c-go" class="primary">Compare</button></div><div id="c-out"></div>`);
+  $("#c-go").onclick = async () => {
+    const out = $("#c-out"); out.innerHTML = `<div class="status">Scanning both refs…</div>`;
+    try {
+      const q = new URLSearchParams({ url: s.url, path: s.path || "", base: $("#c-base").value.trim(), head: $("#c-head").value.trim() });
+      const d = await api("/api/compare?" + q, { headers: hdrs(src && src.token ? { "X-Git-Token": src.token } : {}) });
+      const li = (f, cls) => `<li><span class="pill ${f.sev}">${f.sev}</span> <span class="rid">${esc(f.rule || "")}</span> ${esc(f.title)}
+        <div class="where">${esc(f.resource || "")}${f.file ? " · " + esc(f.file) + ":" + f.line : ""}</div>${f.reason ? `<div class="acc">Accepted: ${esc(f.reason)} (until ${esc(f.expires)})</div>` : ""}</li>`;
+      out.innerHTML = `<div class="cmp-score"><div><div class="muted">${esc(d.baseRef.ref)} @${esc(d.baseRef.commit)}</div><div class="big ${scoreCls(d.base.score)}">${d.base.score}</div></div>
+          <div class="big ${d.scoreDelta > 0 ? "delta-up" : d.scoreDelta < 0 ? "delta-down" : ""}">${d.scoreDelta > 0 ? "▲" : d.scoreDelta < 0 ? "▼" : "="} ${d.scoreDelta > 0 ? "+" : ""}${d.scoreDelta}</div>
+          <div><div class="muted">${esc(d.headRef.ref)} @${esc(d.headRef.commit)}</div><div class="big ${scoreCls(d.head.score)}">${d.head.score}</div></div></div>
+        <h3 class="xh">New (${d.new.length})</h3><ul class="cmp-list">${d.new.map((f) => li(f)).join("") || '<li class="muted">none</li>'}</ul>
+        <h3 class="xh">Fixed (${d.fixed.length})</h3><ul class="cmp-list">${d.fixed.map((f) => li(f)).join("") || '<li class="muted">none</li>'}</ul>
+        ${d.accepted.length ? `<h3 class="xh">Newly accepted (${d.accepted.length})</h3><ul class="cmp-list">${d.accepted.map((f) => li(f)).join("")}</ul>` : ""}
+        <div class="muted" style="font-size:12px">${d.unchanged} unchanged · resources +${d.addedResources.length} / −${d.removedResources.length}</div>
+        <div class="row left" style="margin-top:12px"><button id="c-md" class="ghost">Copy as Markdown</button></div>`;
+      $("#c-md").onclick = async () => { try { await navigator.clipboard.writeText(d.markdown); $("#c-md").textContent = "Copied ✓"; } catch { window.prompt("Copy:", d.markdown); } };
+    } catch (e) { out.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+  };
+};
+$("#btn-watch").onclick = () => {
+  const s = D.source, freqs = INFO?.frequencies || ["daily"];
+  panel2("Watch this chart", `<p class="muted" style="font-size:12.5px">Rescan <b>${esc(s.repo)}</b>${s.path ? " / " + esc(s.path) : ""} (${esc(s.ref)}) on a schedule. Results appear in History and Grafana.</p>
+    <div class="formrow"><select id="wf">${freqs.map((f) => `<option ${f === "daily" ? "selected" : ""}>${f}</option>`).join("")}</select><button id="wgo" class="primary">Start watching</button></div><div id="wout"></div>`);
+  $("#wgo").onclick = async () => {
+    try { await post("/api/repos", { url: s.url, ref: s.ref === "default branch" ? "" : s.ref, path: s.path || "", frequency: $("#wf").value, kubeTarget: D.kubeTarget });
+      $("#wout").innerHTML = `<div class="ok">✓ Watching. Manage it under Home → Watched repos.</div>`; }
+    catch (e) { $("#wout").innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+  };
+};
+
+// ---- diagram zoom & pan
+const SVGNS = "http://www.w3.org/2000/svg";
+const Z = { k: 1, x: 0, y: 0, fit: 1, W: 0, H: 0, keep: false, dragged: false };
+function zoomSetup(Wn, Hn) {
+  const svg = $("#graph"), vw = svg.clientWidth || 900, vh = svg.clientHeight || 360;
+  const g = document.createElementNS(SVGNS, "g"); g.id = "vp";
+  while (svg.firstChild) g.appendChild(svg.firstChild);
+  svg.appendChild(g);
+  Z.W = Wn; Z.H = Hn; Z.fit = Math.min(1, vw / Wn, vh / Hn);
+  if (!Z.keep) { Z.k = Z.fit; Z.x = (vw - Wn * Z.k) / 2; Z.y = (vh - Hn * Z.k) / 2; }
+  applyZ(false);
+}
+function applyZ(animate) {
+  const vp = $("#vp"); if (!vp) return;
+  vp.style.transition = animate ? "transform .35s ease" : "none";
+  vp.setAttribute("transform", `translate(${Z.x},${Z.y}) scale(${Z.k})`);
+  $("#z-lvl").textContent = Math.round(Z.k * 100) + "%";
+}
+function zoomAt(f, cx, cy, animate) {
+  const k2 = Math.min(3, Math.max(0.15, Z.k * f));
+  Z.x = cx - (cx - Z.x) * (k2 / Z.k); Z.y = cy - (cy - Z.y) * (k2 / Z.k); Z.k = k2; Z.keep = true; applyZ(animate);
+}
+function zoomCenter(f) { const s = $("#graph"); zoomAt(f, s.clientWidth / 2, s.clientHeight / 2, true); }
+function zoomFit() { Z.keep = false; const s = $("#graph"); Z.k = Z.fit; Z.x = (s.clientWidth - Z.W * Z.k) / 2; Z.y = (s.clientHeight - Z.H * Z.k) / 2; applyZ(true); }
+function zoomFollow(p) {  // keep the active node in view when zoomed in
+  if (!p || Z.k <= Z.fit * 1.1) return;
+  const s = $("#graph"), sx = Z.x + p.x * Z.k, sy = Z.y + p.y * Z.k, m = 80;
+  if (sx > m && sx < s.clientWidth - m && sy > m && sy < s.clientHeight - m) return;
+  Z.x = s.clientWidth / 2 - p.x * Z.k; Z.y = s.clientHeight / 2 - p.y * Z.k; applyZ(true);
+}
+(() => {
+  const svg = $("#graph"); let start = null;
+  svg.addEventListener("wheel", (e) => { e.preventDefault(); const r = svg.getBoundingClientRect(); zoomAt(Math.exp(-e.deltaY * 0.0015), e.clientX - r.left, e.clientY - r.top); }, { passive: false });
+  svg.addEventListener("pointerdown", (e) => { if (e.button !== 0) return; start = { x: e.clientX, y: e.clientY, zx: Z.x, zy: Z.y }; Z.dragged = false; });
+  window.addEventListener("pointermove", (e) => {
+    if (!start) return;
+    const dx = e.clientX - start.x, dy = e.clientY - start.y;
+    if (!Z.dragged && Math.hypot(dx, dy) < 4) return;
+    Z.dragged = true; svg.classList.add("panning"); Z.keep = true;
+    Z.x = start.zx + dx; Z.y = start.zy + dy; applyZ(false);
+  });
+  window.addEventListener("pointerup", () => { start = null; svg.classList.remove("panning"); setTimeout(() => (Z.dragged = false), 0); });
+  svg.addEventListener("click", (e) => { if (Z.dragged) { e.stopPropagation(); e.preventDefault(); } }, true);
+  svg.addEventListener("dblclick", (e) => { const r = svg.getBoundingClientRect(); zoomAt(1.6, e.clientX - r.left, e.clientY - r.top, true); });
+  $("#z-in").onclick = () => zoomCenter(1.25); $("#z-out").onclick = () => zoomCenter(0.8); $("#z-fit").onclick = zoomFit;
+  $("#z-big").onclick = () => { $(".work").classList.toggle("big"); Z.keep = false; setTimeout(() => D && buildGraph(), 30); };
+  document.addEventListener("keydown", (e) => {
+    if (!D || /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName) || $("#work").classList.contains("hidden")) return;
+    if (e.key === "+" || e.key === "=") zoomCenter(1.25);
+    if (e.key === "-" || e.key === "_") zoomCenter(0.8);
+    if (e.key === "0") zoomFit();
+    if (e.key === "f") $("#z-big").click();
+  });
+})();
+
+// deep links to the home tabs: /?home=rules&rule=CKS-POD-002
+(() => { const q = new URLSearchParams(location.search); if (q.get("home")) setHome(q.get("home"), { rule: q.get("rule") }); })();
+api("/api/rules").then((c) => { CAT = c; RULES = Object.fromEntries(c.rules.map((r) => [r.id, r])); }).catch(() => {});
+
+window.__hv = { load, go, setView, setHome, zoomCenter, zoomFit };  // handle for debugging / tests
 if (window.__PRELOAD__) load(window.__PRELOAD__);
 })();

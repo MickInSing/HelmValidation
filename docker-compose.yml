@@ -1,19 +1,92 @@
+# Local stack: visualiser + Postgres (scan history) + Prometheus (app metrics) + Grafana (dashboards)
+#   docker compose up -d --build
+#   app:     http://localhost:8080
+#   grafana: http://localhost:3000   (anonymous read-only; admin / $GRAFANA_ADMIN_PASSWORD to edit)
 services:
   helm-visualiser:
-    build: .
+    build:
+      context: .
+      args:
+        GIT_SHA: ${GIT_SHA:-local}
     image: helm-visualiser:local
     container_name: helm-visualiser
     ports:
-      - "127.0.0.1:8080:8080"   # local only
+      - "127.0.0.1:8080:8080"
     read_only: true
-    volumes:
-      # Charts on your Mac the app can open directly (no browser upload needed).
-      # Defaults to ~/charts; override with CHARTS_DIR=/some/path docker compose up -d
-      - ${CHARTS_DIR:-${HOME}/charts}:/charts:ro
     tmpfs:
-      - /tmp:size=128m
+      - /tmp:size=512m        # uploads, git clones, helm caches
+    volumes:
+      # Charts on your Mac the app can open directly. Defaults to ~/charts; override with CHARTS_DIR=/path
+      - ${CHARTS_DIR:-${HOME}/charts}:/charts:ro
+    environment:
+      DATABASE_URL: postgresql://helmviz:${POSTGRES_PASSWORD:-helmviz-local}@postgres:5432/helmviz
+      SCAN_RETENTION_DAYS: "180"
+      GRAFANA_URL: http://localhost:3000/d/helm-visualiser
+      GIT_ALLOWED_HOSTS: github.com,gitlab.com,bitbucket.org
+      # Token for private repos when scanning on a schedule (fine-grained, Contents: read). Optional.
+      GIT_TOKEN: ${GIT_TOKEN:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
     cap_drop: [ALL]
-    security_opt:
-      - no-new-privileges:true
-    mem_limit: 256m
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 512m
     restart: unless-stopped
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: helm-visualiser-db
+    environment:
+      POSTGRES_USER: helmviz
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-helmviz-local}
+      POSTGRES_DB: helmviz
+      GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:-grafana-ro-local}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./monitoring/postgres-init.sh:/docker-entrypoint-initdb.d/10-grafana-reader.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U helmviz -d helmviz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    # ports: ["127.0.0.1:5432:5432"]   # uncomment to query it from your Mac
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    container_name: helm-visualiser-prometheus
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=30d"]
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.2.4
+    container_name: helm-visualiser-grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/helm-visualiser.json
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      HELMVIZ_GRAFANA_DB_PASSWORD: ${GRAFANA_DB_PASSWORD:-grafana-ro-local}
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    depends_on: [postgres, prometheus]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  promdata:
+  grafanadata:

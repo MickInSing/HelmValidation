@@ -6,12 +6,16 @@ import re
 import subprocess
 import tarfile
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 
 import yaml
 
 import views
+import rules
+import deprecations
+import exceptions
 
 HELM = os.environ.get("HELM_BIN", "helm")
 HELM_TIMEOUT = int(os.environ.get("HELM_TIMEOUT", "30"))
@@ -625,8 +629,9 @@ def _deep_merge(a, b):
 
 
 def analyse_chart_dir(chart_dir: Path, release="demo", namespace="default", overrides="", value_files=(),
-                      set_lines=(), bypass=False):
+                      set_lines=(), bypass=False, kube_target=None, repo_exceptions=None):
     chart_dir = Path(chart_dir)
+    t0 = time.time()
     if not (chart_dir / "Chart.yaml").exists():
         raise AnalysisError("Chart.yaml not found")
     if not re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", release):
@@ -735,8 +740,27 @@ def analyse_chart_dir(chart_dir: Path, release="demo", namespace="default", over
     for r in resources:
         r.pop("missing", None)
 
+    # rules catalog: chart-level Helm/Kubernetes checks + deprecated APIs, then rule IDs on everything
+    kube_target = kube_target if kube_target in deprecations.TARGETS else deprecations.DEFAULT_TARGET
+    objs0 = {r["id"]: r["_obj"] for r in resources}
+    extra = rules.chart_checks(files, chart, resources, objs0, vindex, namespace) + deprecations.check(resources, files, kube_target)
+    byid = {r["id"]: r for r in resources}
+    for f in extra:
+        f["id"] = f"f{len(findings)}"
+        findings.append(f)
+        if f.get("resource") in byid:
+            byid[f["resource"]]["findings"].append(f["id"])
+    rules.tag(findings)
+    # .helm-visualiser.yaml: accepted findings + notes
+    exc_cfg, exc_problems = exceptions.load(files, repo_exceptions)
+    exc_rows = exceptions.apply(findings, exc_cfg, resources)
+    for p in exc_problems:
+        notes.append(f"**{exceptions.FILENAME}:** {p}")
+    if exc_cfg["notes"]:
+        notes.insert(0, "**Chart notes (from " + exceptions.FILENAME + "):** " + exc_cfg["notes"])
+
     hooks = {r["id"] for r in resources if r["hook"]}
-    penalty = sum(SEV_WEIGHT[f["sev"]] * (0.5 if f["resource"] in hooks else 1) for f in findings)
+    penalty = sum(SEV_WEIGHT[f["sev"]] * (0.5 if f["resource"] in hooks else 1) for f in findings if not f.get("accepted"))
     score = round(100 / (1 + penalty / 80))
     steps = _build_steps(chart, files, resources, findings, vindex, lint, render_error, notes, release, namespace, externals)
 
@@ -751,7 +775,12 @@ def analyse_chart_dir(chart_dir: Path, release="demo", namespace="default", over
                 valueFiles=available_vf, usedValueFiles=used_vf,
                 required=[dict(q, placeholder=_placeholder(q["path"])) for q in required],
                 suggested=_skeleton([r["path"] for r in required]), externals=externals, bypass=bool(bypass),
-                helm=helm_view, infra=infra_view)
+                helm=helm_view, infra=infra_view,
+                ruleset=rules.RULESET["version"], kubeTarget=kube_target, kubeTargets=deprecations.TARGETS,
+                exceptions=exc_rows, chartNotes=exc_cfg["notes"],
+                counts={s: sum(1 for f in findings if f["sev"] == s and not f.get("accepted")) for s in SEV_WEIGHT},
+                accepted=sum(1 for f in findings if f.get("accepted")),
+                durationMs=int((time.time() - t0) * 1000))
 
 
 def _parse_rendered(rendered, files):

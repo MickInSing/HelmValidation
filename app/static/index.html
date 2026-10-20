@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Helm Chart Walkthrough</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231e9bff'/%3E%3Cpath d='M16 6v20M6 16h20M9 9l14 14M23 9 9 23' stroke='white' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="style.css?v=8">
+<link rel="stylesheet" href="style.css?v=10">
 </head>
 <body>
 <div class="shell">
@@ -32,12 +32,24 @@
       <div id="crumb" class="crumb">Helm Visualiser <span>/</span> No chart loaded</div>
       <div class="tb-actions">
         <button id="btn-values" class="ghost hidden">Values <span id="vals-badge" class="vbadge hidden"></span></button>
+        <button id="btn-compare" class="ghost hidden" title="Compare with another branch, tag or commit">Compare</button>
+        <button id="btn-watch" class="ghost hidden" title="Rescan this chart on a schedule">Watch</button>
+        <button id="btn-share" class="ghost hidden" title="Copy a link that opens this chart">Share link</button>
         <button id="btn-new" class="ghost hidden">Load another chart</button>
       </div>
     </header>
 
     <!-- Empty / upload state -->
     <section id="landing" class="landing">
+      <nav class="hometabs" role="tablist" aria-label="Home">
+        <button data-home="scan" class="on">Scan a chart</button>
+        <button data-home="rules">Best practices</button>
+        <button data-home="history">History</button>
+        <button data-home="watch">Watched repos</button>
+        <a id="grafana-link" class="hidden" target="_blank" rel="noopener">Grafana ↗</a>
+        <span id="rules-stamp" class="stamp"></span>
+      </nav>
+      <div id="hp-scan" class="hpanel center">
       <div id="drop" class="drop" tabindex="0">
         <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M24 32V12m0 0-8 8m8-8 8 8M10 34v4h28v-4" fill="none" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <h2>Drop a Helm chart here</h2>
@@ -48,6 +60,23 @@
           <button id="btn-pick" class="primary">Choose .tgz / .zip</button>
           <button id="btn-folder" class="primary">Choose chart folder</button>
           <button id="btn-sample" class="ghost">Try the sample chart</button>
+        </div>
+        <div class="gitbox">
+          <div class="local-h">Open from a Git repository</div>
+          <div class="row">
+            <input id="git-url" class="git-url" placeholder="https://github.com/org/repo/tree/main/charts/my-chart" spellcheck="false" autocomplete="off">
+          </div>
+          <div class="row">
+            <input id="git-ref" class="git-small" placeholder="branch / tag (optional)" spellcheck="false">
+            <input id="git-path" class="git-small" placeholder="chart folder (optional)" spellcheck="false">
+            <button id="btn-git" class="primary">Open</button>
+          </div>
+          <details class="git-priv"><summary>Private repository?</summary>
+            <input id="git-token" type="password" class="git-url" placeholder="token with read access (not stored)" autocomplete="off">
+            <div class="muted hint">Used for this request only. Never saved or logged. A GitHub fine-grained token with <b>Contents: read</b> is enough. <span id="git-srvtok"></span></div>
+          </details>
+          <div id="git-pick" class="hidden"></div>
+          <div id="git-hosts" class="muted hint"></div>
         </div>
         <div class="local">
           <div class="local-h">Or open one from your charts folder <span id="localdir" class="muted"></span></div>
@@ -63,9 +92,15 @@
         <div class="row opts">
           <label>Release <input id="rel" value="demo" spellcheck="false"></label>
           <label>Namespace <input id="ns" value="default" spellcheck="false"></label>
+          <label>Target Kubernetes <select id="kube" title="For the deprecated / removed API check"></select></label>
         </div>
+        <div class="row opts"><label class="chk"><input type="checkbox" id="norec"> Don't record this scan in history</label><span id="histnote" class="muted"></span></div>
         <div id="err" class="err hidden"></div>
       </div>
+      </div>
+      <div id="hp-rules" class="hpanel hidden"></div>
+      <div id="hp-history" class="hpanel hidden"></div>
+      <div id="hp-watch" class="hpanel hidden"></div>
     </section>
 
     <!-- Walkthrough -->
@@ -77,6 +112,10 @@
           <button data-mode="split" title="Template and rendered output side by side"><svg viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="12" rx="2" fill="none" stroke-width="1.6"/><path d="M10 4v12" fill="none" stroke-width="1.6"/></svg>Side by side</button>
         </div>
         <div class="legend" id="legend"></div>
+        <div class="zoombar" aria-label="Diagram zoom">
+          <button id="z-out" title="Zoom out (-)">−</button><span id="z-lvl" class="zl">100%</span><button id="z-in" title="Zoom in (+)">+</button>
+          <button id="z-fit" title="Fit to view (0)">⤢</button><button id="z-big" title="Bigger diagram (f)">⇕</button>
+        </div>
         <svg id="graph" class="graph" aria-label="Chart resource diagram"></svg>
         <div class="nav">
           <button id="prev" class="navbtn" aria-label="Previous step">&#8592;</button>
@@ -98,6 +137,10 @@
         </article>
       </div>
     </section>
+    <aside id="panel2" class="drawer hidden" aria-label="Panel">
+      <div class="dr-head"><h2 id="p2-title"></h2><button id="p2-close" class="ghost" aria-label="Close">✕</button></div>
+      <div id="p2-body"></div>
+    </aside>
     <aside id="drawer" class="drawer hidden" aria-label="Values">
       <div class="dr-head"><h2>Values</h2><button id="dr-close" class="ghost" aria-label="Close">✕</button></div>
       <div id="dr-err" class="dr-err hidden"></div>
@@ -113,6 +156,7 @@
           <li>Paste the whole ArgoCD <code>Application</code> manifest. Its parameters, values, valuesObject and valueFiles are applied the way Argo would.</li>
         </ul>
         <textarea id="dr-text" spellcheck="false" placeholder="orgID: my-org&#10;clusterName: my-cluster"></textarea>
+        <label class="vf">Target Kubernetes <select id="dr-kube"></select></label>
         <label class="vf"><input type="checkbox" id="dr-bypass"> Bypass <code>fail</code>/<code>required</code> checks (preview only)</label>
         <div class="row left">
           <button id="dr-run" class="primary">Re-render</button>
@@ -125,6 +169,6 @@
   </main>
 </div>
 <div id="tip" class="tip hidden"></div>
-<script src="app.js?v=8"></script>
+<script src="app.js?v=10"></script>
 </body>
 </html>

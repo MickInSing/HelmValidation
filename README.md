@@ -1,126 +1,176 @@
 # Helm Chart Walkthrough
 
-A small local web app. Upload a Helm chart and it walks you through it step by step:
+A local web app (and CI check) that walks you through a Helm chart step by step, explains every piece, and checks it against Kubernetes, Helm and CKS best practice.
 
-1. **Chart.yaml**: identity and versions
-2. **values.yaml**: the defaults every template reads
-3. **_helpers.tpl**: named templates and labels
-4. **Every rendered resource, in Helm's install order.** Each step highlights the template lines, the `.Values` it reads (and where they live in values.yaml), the helpers it includes, and the rendered manifest.
-5. **NOTES.txt**, then a **summary** with `helm lint` output and every finding.
+* **Three views of every chart.**
+  * **Chart**: every file and rendered resource, in install order.
+  * **Helm concepts**: the Chart Template Guide topics, as this chart uses them.
+  * **Infrastructure**: network, identity, secrets, storage, logging, security and platform.
+* **Rules catalog.** 41 checks with IDs, severities, fixes and references, on a **Best practices** page stamped with the ruleset version and last-updated date.
+* **Deprecated / removed API check** against a target Kubernetes version.
+* **Exceptions & notes** (`.helm-visualiser.yaml`): accept a finding, with a reason and an expiry date.
+* **Scan history** in Postgres (summaries only), **Grafana** dashboards and Prometheus **/metrics**.
+* **Watched repos**: optional scheduled rescans.
+* **Compare** two branches, tags or commits: new, fixed and accepted findings.
+* **PR check**: a GitHub Action that comments the score and diff on every chart PR.
+* Charts from **Git addresses**, uploads, a mounted folder or the bundled sample, with ArgoCD-style values.
 
-The diagram shows how the resources connect (Service → Deployment, RoleBinding → Role/SA, Ingress → Service, HPA → Deployment and so on). Each resource is checked against CKS hardening practices: securityContext, runAsNonRoot, privilege escalation, read-only root FS, dropped capabilities, seccomp, resources, image pinning, SA token automount, host namespaces, hostPath, RBAC wildcards and secret access, plaintext secret env vars, NetworkPolicy, and Ingress TLS. Each finding points to the exact line and includes a fix snippet.
-
-## Run on OrbStack (Docker)
+## Quick start (OrbStack / Docker)
 
 ```bash
-mkdir -p ~/charts                     # put chart folders or .tgz/.zip files here
+mkdir -p ~/charts                       # optional: charts the app can open without uploading
 cd helm-visualiser
-docker compose up -d --build          # or: CHARTS_DIR=~/code/helm docker compose up -d --build
-open http://localhost:8080          # or http://helm-visualiser.orb.local:8080
+docker compose up -d --build
+open http://localhost:8080              # the visualiser
+open http://localhost:3000              # Grafana (anonymous read-only; admin/admin to edit)
 ```
 
-Click **Try the sample chart** to see it work, or drop in your own chart. A chart folder works directly (drag it in or use **Choose chart folder**), as does a packaged archive:
+The stack is the app, Postgres 17 (scan history), Prometheus v3.15 (app metrics) and Grafana 13.2 with the datasources and dashboard already provisioned. All ports are bound to 127.0.0.1. Set `POSTGRES_PASSWORD`, `GRAFANA_DB_PASSWORD` and `GRAFANA_ADMIN_PASSWORD` in your shell before the first `up` if this isn't just your laptop.
+
+## Home page
+
+| Tab | What's there |
+|---|---|
+| **Scan a chart** | Drop/choose a chart, open a Git address, pick from `~/charts`, or try the sample. Set the release, namespace and **target Kubernetes version**, and tick **Don't record** for a one-off private scan. |
+| **Best practices** | The rules catalog. Filter by CKS / Kubernetes / Helm, search, see how often each rule fails (last 30 days). Shows **ruleset version · last updated · Helm version**. Link straight to a rule: `/?home=rules&rule=CKS-POD-002`. |
+| **History** | Recent scans: repo, ref, score, findings, status, trigger (ui / api / schedule / pr). Click a Git scan to reopen it. |
+| **Watched repos** | Add a repo + chart with a frequency (hourly / 6h / daily / weekly). Pause, run now, remove. |
+
+## Inside a chart
+
+* **Chart / Helm concepts / Infrastructure** tabs in the sidebar (keys `1` `2` `3`).
+* **Template / Rendered / Side by side** code views (`t` cycles).
+* **Diagram zoom & pan**: scroll to zoom, drag to pan, double-click to zoom in, `+` / `-` / `0` (fit), `f` or ⇕ for a taller diagram. Large charts get a wider canvas instead of squashed nodes, and the active node is kept in view.
+* Every finding shows its **rule ID** (click for the catalog entry). Accepted findings are struck through, with the reason, owner and expiry date.
+* **Values**: supply what ArgoCD would (parameters, values, valueFiles, or paste the whole `Application`), or preview with placeholders.
+* **Compare** (Git charts): scan another branch, tag or commit; see the score change and the new, fixed and newly accepted findings; copy the result as Markdown.
+* **Watch** (Git charts): add the chart to the scheduled rescans.
+* **Share link**: a URL that reopens the same chart and view.
+
+## Exceptions and notes: `.helm-visualiser.yaml`
+
+Put it in the chart folder, or the repo root to cover every chart (see `examples/.helm-visualiser.yaml`):
+
+```yaml
+notes: |
+  Shown at the top of the walkthrough.
+exceptions:
+  - rule: CKS-HOST-001              # rule ID from the Best practices page
+    resource: DaemonSet/node-agent  # optional: Kind/name or Kind; omit for the whole chart
+    container: agent                # optional
+    reason: Needs host networking to collect node metrics
+    expires: 2027-03-31             # required, max ~13 months: accepted risk gets reviewed
+    owner: platform-team            # optional
+```
+
+Accepted findings don't count towards the score. Expired, unreasoned or open-ended exceptions are flagged and ignored. The summary step lists every exception and how many findings it matched.
+
+## Scan history and privacy
+
+Stored per scan: repo (host/org/repo), ref, commit, chart path, chart name/version, time, duration, status, **error class** (e.g. `needs-values`, `git-auth`), score, counts by severity, failed **rule IDs with resource kind**, dependency categories, API versions, and the tool, ruleset and Helm versions.
+
+**Never stored:** file contents, values, rendered YAML, resource names, hostnames, env vars, tokens, raw error text (Helm errors can echo values), or upload file names (uploads are recorded as `upload`).
+
+Retention is 180 days (`SCAN_RETENTION_DAYS`). Without `DATABASE_URL` everything still works, just without History, Watch and Grafana. If the database goes down, scans carry on.
+
+## Grafana dashboard
+
+*Helm visualiser: scan history* (provisioned from `monitoring/grafana/dashboards/helm-visualiser.json`):
+
+* **Overview:** scans, repositories, average score, render failures, scans per day by status, score trend per repository.
+* **Rules:** top failing rules (what to train people on); findings by framework and severity.
+* **Repositories:** never passing (best score < 70), stale (> 30 days), render failures by cause, platform dependencies across charts, deprecated/removed API usage.
+* **Versions:** API versions in rendered charts; tool / ruleset / Helm versions.
+* **Health (Prometheus):** scan rate, p50/p95 scan duration, database up.
+
+The JSON works in any Grafana: point a `grafana-postgresql-datasource` with uid `helmviz-pg` at the database (read-only user), and a Prometheus datasource with uid `helmviz-prom` at a Prometheus that scrapes `/metrics`.
+
+## PR check (GitHub Action)
+
+In a chart repo, add `.github/workflows/helm-check.yml` (copy `examples/pr-check.yml`):
+
+```yaml
+- uses: MickInSing/helm-visualiser@main
+  with:
+    charts-dir: charts
+    kube-version: "1.36"
+    fail-on-new: high          # fail if the PR adds high/critical findings
+    # fail-under: 70
+    registry-token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+It checks out the PR and its base, scans every chart in both (in a container with no network and a read-only filesystem), and posts one PR comment that it keeps updated. The comment shows the score change and the new, fixed and accepted findings. The job fails on your thresholds. Locally, run the same check with:
 
 ```bash
-helm package ./mychart              # -> mychart-0.1.0.tgz
-# or: helm pull bitnami/nginx       # any packaged chart works
-# or: zip -r mychart.zip mychart/
+docker run --rm -v "$PWD:/work" ghcr.io/mickinsing/helm-visualiser python /app/app/cli.py \
+  scan --head /work --base /work/../main-checkout --kube 1.36 --fail-on-new high
 ```
 
-If your browser blocks file uploads (common on managed laptops), use **Open from your charts folder**. The container reads `~/charts` read-only, so no upload is needed. The small grey line under the buttons should say `script loaded · server v3`. If it says `script not loaded`, the page's JavaScript is being blocked.
+## API
 
-The container runs hardened: non-root UID 10001, read-only root filesystem, `/tmp` on tmpfs, all capabilities dropped, no-new-privileges and a 256 MB memory limit. It's bound to 127.0.0.1 only.
+| Endpoint | |
+|---|---|
+| `POST /api/scan` | `{"url": "https://github.com/org/repo/tree/main/charts/app", "kubeTarget": "1.36", "base": "main", "failUnder": 70, "noRecord": false}` returns score, counts, findings (rule, severity, resource, file:line), externals, plus a compare if `base` is set. Private repos: `X-Git-Token` header. |
+| `GET /api/compare?url=&path=&base=&head=` | Diff of two refs, including Markdown. |
+| `GET /api/rules` | Catalog + ruleset version + fail rates. |
+| `GET /api/history`, `/api/stats`, `/api/repos` | History, 30-day stats, watched repos (`POST`/`DELETE` to manage). |
+| `GET /metrics` | Prometheus: `helmviz_scans_total`, `helmviz_scan_duration_seconds`, `helmviz_findings_total`, `helmviz_git_fetch_total`, `helmviz_db_up`, `helmviz_watched_repos`, `helmviz_build_info`. |
 
-## Three views
+## Open a chart from Git
 
-Switch with the tabs at the top of the sidebar, or keys `1` `2` `3`.
+Paste a browser address: a repo (`https://github.com/org/repo`), a folder (`…/tree/main/charts/app`) or a file (`…/blob/main/charts/app/values.yaml`). GitLab and Bitbucket addresses work too. Several charts means you get a picker. For private repos use the token field (used once, never stored), or give the server `GIT_TOKEN`, which scheduled scans need.
 
-* **Chart**: the step-by-step walkthrough of every file and rendered resource, with CKS checks.
-* **Helm concepts**: one step per topic in the [Chart Template Guide](https://helm.sh/docs/chart_template_guide/) (built-in objects, values, functions and pipelines, flow control, variables, named templates, files, NOTES.txt, subcharts, .helmignore, debugging, YAML techniques, data types). Each shows how often *this* chart uses it, highlights every place in the code, flags anti-patterns (unused values, non-deterministic functions, missing .helmignore) and links to the docs. The diagram is Helm's render pipeline.
-* **Infrastructure**: the same resources regrouped by concern: network and ingress, compute and scaling, identity and authentication, secrets and config, storage and data, logging and observability, security posture, and Kubernetes platform. Each row has a status and links to its evidence line. Things the cluster must provide (ingress controller, metrics-server, operators) and things only **inferred** (a database from `DB_*` env vars, a node log agent) are dashed and marked `?`. Click a resource node to open it in the Chart view.
+Safety: https only; allowed hosts only (`GIT_ALLOWED_HOSTS`; add your GitHub Enterprise host); shallow clone with a 60 s timeout and a 200 MB cap; symlinks checked out as plain files.
 
-## Charts that need ArgoCD (or other outside) values
+## Charts that need ArgoCD values
 
-Some charts refuse to render with plain `helm template`. They use `fail` or `required` to demand values that ArgoCD passes at deploy time. When that happens the **Values** panel opens with:
+If `helm template` fails because the chart `fail`s without Argo parameters, the **Values** panel opens with:
 
-* **A form for each value the chart needs.** These are detected from `fail`/`required` in the templates and from the error message. Type real values, or click **Fill empty with placeholders**.
-* **"Just show me the diagram".** One click fills placeholders (`setme-…`, highlighted orange in the code) and bypasses `fail`/`required` in a scratch copy, so you get a picture even when you don't know the values. Your chart is never modified.
-* **Values files** shipped in the chart (`values-prod.yaml`, ...), to tick like Argo `valueFiles`.
-* **Overrides**: YAML, `key=value` lines (Argo parameters / `--set`), or **paste the whole ArgoCD `Application`**. Its `helm.parameters`, `values`, `valuesObject` and `valueFiles` are applied the way Argo would.
+* a form for each required value;
+* **"Just show me the diagram"**, which fills placeholders and bypasses `fail`/`required` in a scratch copy;
+* the chart's values files to tick;
+* an overrides box that takes YAML, `key=value` lines, or a whole ArgoCD `Application`.
 
-## External dependencies
-
-Anything the chart relies on that Helm doesn't provide appears as a dashed orange **External** node, wired to the resources that need it, with its own walkthrough step:
-
-* Values that must come from ArgoCD / deploy time
-* `lookup` calls. These read the live cluster and are always empty in `helm template`.
-* `.Capabilities` checks. Output depends on the cluster's APIs and version.
-* Third-party operators whose CRDs the chart uses (Prometheus Operator, cert-manager, External Secrets, Istio, Argo, ...)
-* ArgoCD sync-wave / hook annotations
-* Secrets, ConfigMaps, ServiceAccounts and PVCs the chart references but doesn't create (the `existingSecret` pattern)
+External dependencies (ArgoCD values, `lookup`, `.Capabilities`, operators/CRDs, sync waves, pre-existing Secrets) appear as dashed nodes.
 
 ## Repo layout
 
 ```
-app/                    Python server, analyser, views and UI (static/)
+app/                    server, analyser, rules, views, db, git, CLI, UI (static/)
 sample-chart/           demo chart bundled into the image
-Dockerfile              Helm 4 + Python, non-root, read-only root FS
-docker-compose.yml      local run on OrbStack/Docker
-deploy/chart/           Helm chart for deploying the visualiser itself
-deploy/argocd/          ArgoCD Application pointing at deploy/chart
-.github/workflows/      CI: build multi-arch image -> GHCR -> pin tag for Argo
+monitoring/             Prometheus config, Grafana provisioning + dashboard, Postgres init
+deploy/chart/           Helm chart for the visualiser (CNPG database, NetworkPolicy, hardened pod)
+deploy/argocd/          ArgoCD Application for deploy/chart
+action.yml              reusable PR-check action
+examples/               PR workflow + .helm-visualiser.yaml examples
+.github/workflows/      CI: multi-arch image -> GHCR -> pin tag for Argo
 ```
 
 ## Publish to GitHub
 
 ```bash
-cd helm-visualiser
-git init -b main
-git add .
-git commit -m "Helm chart visualiser"
+git init -b main && git add . && git commit -m "Helm chart visualiser"
 gh repo create MickInSing/helm-visualiser --private --source . --push
-#   or create the repo on github.com, then:
-#   git remote add origin https://github.com/MickInSing/helm-visualiser.git && git push -u origin main
 ```
 
-Each push to `main` runs **.github/workflows/build.yml**, which:
+Each push to `main` builds `linux/amd64` + `linux/arm64`, pushes `ghcr.io/mickinsing/helm-visualiser:sha-<commit>` / `:main` / `:latest`, stamps the commit and build date into the image (shown in the UI and `/metrics`), and pins the new tag in `deploy/chart/values.yaml` so Argo rolls it out. GHCR images start private: make the package public, or use pull secrets and `registry-token`.
 
-1. Builds `linux/amd64` + `linux/arm64` (cluster nodes and Apple Silicon).
-2. Pushes `ghcr.io/mickinsing/helm-visualiser:sha-<commit>`, `:main` and `:latest` (plus `:1.2.3` for `v1.2.3` git tags).
-3. Commits the new `sha-…` tag into `deploy/chart/values.yaml`, so ArgoCD rolls it out.
+## Deploy with ArgoCD (CNPG for the database)
 
-Pull requests build but don't push. If `main` has branch protection that blocks the bot's commit, allow `github-actions[bot]` or switch step 3 to opening a PR.
-
-**Image visibility:** GHCR packages start **private**. Either make it public (GitHub → Packages → helm-visualiser → Package settings), or create a pull secret in the cluster and set `imagePullSecrets` (instructions in `deploy/chart/values.yaml`).
-
-## Deploy with ArgoCD
+Prerequisite: the CloudNativePG operator is installed in the cluster.
 
 ```bash
 kubectl apply -n argocd -f deploy/argocd/application.yaml
 ```
 
-Argo creates the `helm-visualiser` namespace with Pod Security `restricted` labels and syncs `deploy/chart`. Per-cluster settings (ingress host, SSO annotations, pull secret) go in the Application's `valuesObject`. If the repo is private, add it in Argo first (Settings → Repositories, or `argocd repo add`).
+The chart creates a CNPG `Cluster` (`database.cnpg.*`: 1 instance and 2Gi by default; set `instances: 3` for HA, and configure `backup` for real data). The app reads the `uri` from the CNPG-generated `<release>-db-app` Secret. Set `database.mode: external` with `database.external.secretName` to use an existing Postgres instead. The NetworkPolicy allows the app to reach DNS, its own CNPG pods on 5432 and HTTPS to public Git hosts, and nothing else. Scheduled rescans are safe with several replicas.
 
-The chart passes its own checks: dedicated SA with no token and no RBAC, non-root, read-only root FS, all capabilities dropped, seccomp, resource limits, probes, and a NetworkPolicy that denies all egress and only allows ingress from the namespaces you list.
+Grafana in the cluster is a later step. The dashboard JSON in `monitoring/` is ready to drop into a Grafana sidecar ConfigMap.
 
-**There is no login.** Anyone who can reach the UI can make the server run `helm template` on an uploaded chart (sandboxed: read-only, no network, no API token). Keep the ingress internal and put SSO in front (oauth2-proxy annotations are stubbed in values.yaml).
-
-Try it locally without Argo:
-
-```bash
-helm lint deploy/chart
-helm template hv deploy/chart | less
-kubectl create ns helm-visualiser && helm install hv deploy/chart -n helm-visualiser
-```
-
-Load `deploy/chart` into the visualiser itself. It makes a good worked example of a hardened chart.
-
-## Keys
-
-`←`/`→` (or `k`/`j`) move between steps. `t` switches between Template and Rendered. Click a diagram node to jump to its step. Click any chip or "Show in template" to jump to that line.
+**There is no login.** Keep the ingress internal and put SSO in front (oauth2-proxy annotations are stubbed in `values.yaml`).
 
 ## Notes
 
-* Charts with `dependencies:` need a `charts/` folder (`helm dependency build` before packaging). The app tries to fetch them, which needs network access.
-* Uses **Helm 4** (4.3.1). Change it with `docker compose build --build-arg HELM_VERSION=3.18.4` if you need Helm 3 behaviour.
-* The checks are a learning aid, not a replacement for kube-bench, kubesec, Trivy or Kyverno/Gatekeeper policies.
+* Uses **Helm 4.3.1**. For Helm 3 behaviour: `docker compose build --build-arg HELM_VERSION=3.18.4`.
+* Deprecated-API data comes from the official migration guide (removals up to v1.32; none listed for v1.33–v1.36). Target versions 1.25–1.36.
+* The checks are a learning and review aid, not a replacement for admission policies (Kyverno/Gatekeeper), kube-bench or image scanning.
