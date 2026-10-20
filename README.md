@@ -6,7 +6,7 @@ A local web app (and CI check) that walks you through a Helm chart step by step,
   * **Chart**: every file and rendered resource, in install order.
   * **Helm concepts**: the Chart Template Guide topics, as this chart uses them.
   * **Infrastructure**: network, identity, secrets, storage, logging, security and platform.
-* **Rules catalog.** 41 checks with IDs, severities, fixes and references, on a **Best practices** page stamped with the ruleset version and last-updated date.
+* **Rules catalog.** 61 checks with IDs, severities, fixes and references, on a **Best practices** page stamped with the ruleset version and last-updated date. It covers CKS (22), Kubernetes (7), Helm (12) and **Learnings** (20).
 * **Deprecated / removed API check** against a target Kubernetes version.
 * **Exceptions & notes** (`.helm-visualiser.yaml`): accept a finding, with a reason and an expiry date.
 * **Scan history** in Postgres (summaries only), **Grafana** dashboards and Prometheus **/metrics**.
@@ -32,12 +32,13 @@ The stack is the app, Postgres 17 (scan history), Prometheus v3.15 (app metrics)
 | Tab | What's there |
 |---|---|
 | **Scan a chart** | Drop/choose a chart, open a Git address, pick from `~/charts`, or try the sample. Set the release, namespace and **target Kubernetes version**, and tick **Don't record** for a one-off private scan. |
-| **Best practices** | The rules catalog. Filter by CKS / Kubernetes / Helm, search, see how often each rule fails (last 30 days). Shows **ruleset version · last updated · Helm version**. Link straight to a rule: `/?home=rules&rule=CKS-POD-002`. |
+| **Best practices** | The rules catalog, with live metrics: 30-day stats from the history database, or totals since the server started if there is none (a status line says which). Filter by CKS / Kubernetes / Helm, search, see how often each rule fails (last 30 days). Shows **ruleset version · last updated · Helm version**. Link straight to a rule: `/?home=rules&rule=CKS-POD-002`. |
 | **History** | Recent scans: repo, ref, score, findings, status, trigger (ui / api / schedule / pr). Click a Git scan to reopen it. |
 | **Watched repos** | Add a repo + chart with a frequency (hourly / 6h / daily / weekly). Pause, run now, remove. |
 
 ## Inside a chart
 
+* **Home** (top left, or `h`) goes back to the home tabs without closing the chart; **← Back to chart** returns to it.
 * **Chart / Helm concepts / Infrastructure** tabs in the sidebar (keys `1` `2` `3`).
 * **Template / Rendered / Side by side** code views (`t` cycles).
 * **Diagram zoom & pan**: scroll to zoom, drag to pan, double-click to zoom in, `+` / `-` / `0` (fit), `f` or ⇕ for a taller diagram. Large charts get a wider canvas instead of squashed nodes, and the active node is kept in view.
@@ -46,6 +47,35 @@ The stack is the app, Postgres 17 (scan history), Prometheus v3.15 (app metrics)
 * **Compare** (Git charts): scan another branch, tag or commit; see the score change and the new, fixed and newly accepted findings; copy the result as Markdown.
 * **Watch** (Git charts): add the chart to the scheduled rescans.
 * **Share link**: a URL that reopens the same chart and view.
+
+## Learnings: public security & performance guidance
+
+Twenty extra checks (`LRN-SEC-*`, `LRN-PERF-*`) drawn from the [OWASP Kubernetes Top 10 (2025)](https://kubernetes-top10.owasp.org/), the [Kubernetes Security Checklist](https://kubernetes.io/docs/concepts/security/security-checklist/), [NSA/CISA hardening guidance](https://kubernetes.io/blog/2021/10/05/nsa-cisa-kubernetes-hardening-guidance/), the [Prometheus security model](https://prometheus.io/docs/operating/security/), [Grafana hardening](https://grafana.com/docs/grafana/latest/setup-grafana/configure-security/configure-security-hardening/), [CloudNativePG security](https://cloudnative-pg.io/docs/devel/security) and [Helm provenance](https://helm.sh/docs/topics/provenance/). Only things a chart scan can actually detect are included.
+
+| ID | Learning | Source |
+|---|---|---|
+| LRN-SEC-001 | No bindings to cluster-admin or anonymous / all-authenticated groups | OWASP K02 · NSA/CISA |
+| LRN-SEC-002 | Pod Security baseline: no hostPort, unsafe sysctls, Unmasked procMount, unconfined AppArmor, custom SELinux | Pod Security Standards |
+| LRN-SEC-003 | Namespaces the chart creates enforce Pod Security Admission | OWASP K04 |
+| LRN-SEC-004 | No credentials or private keys in ConfigMaps | K8s Security Checklist · OWASP K03 |
+| LRN-SEC-005 | No literal secrets in values.yaml defaults | OWASP K03 |
+| LRN-SEC-006 | No passwords embedded in URLs (env or ConfigMaps) | OWASP K03 |
+| LRN-SEC-007 | NetworkPolicies restrict egress, not just ingress | K8s Checklist · NSA/CISA · OWASP K05 |
+| LRN-SEC-008 | Prometheus / Grafana / Alertmanager / exporters not exposed via LoadBalancer, NodePort or an unauthenticated Ingress | Prometheus security model · OWASP K06 |
+| LRN-SEC-009 | Prometheus `--web.enable-admin-api` / `--web.enable-lifecycle` off | Prometheus security model |
+| LRN-SEC-010 | Grafana anonymous access off, or Viewer-only | Grafana docs · OWASP K09 |
+| LRN-SEC-011 | Grafana admin password from a Secret, not default or plaintext | Grafana docs · OWASP K09 |
+| LRN-SEC-012 | Grafana hardening: `cookie_secure`, `allow_embedding` off, authenticated `/metrics` | Grafana hardening |
+| LRN-SEC-013 | Database connections don't set `sslmode=disable` / `ssl=false` | CloudNativePG security · OWASP K03 |
+| LRN-SEC-014 | Chart dependencies from HTTPS or OCI, never http:// | Helm provenance · OWASP K07 |
+| LRN-PERF-001 | Memory limit equals memory request | K8s Security Checklist |
+| LRN-PERF-002 | HPA targets request the resource they scale on | Kubernetes HPA docs |
+| LRN-PERF-003 | Replicated workloads spread across nodes/zones | Topology spread docs |
+| LRN-PERF-004 | Liveness probe isn't a copy of the readiness probe | Kubernetes probes docs |
+| LRN-PERF-005 | Prometheus, Grafana, Alertmanager and databases keep state on persistent volumes | Prometheus storage docs |
+| LRN-PERF-006 | CloudNativePG: ≥2 instances, backups configured, superuser access off | CloudNativePG docs |
+
+Grafana settings are read from `GF_*` env vars and from a `grafana.ini` in a ConfigMap (the Grafana Helm chart's layout).
 
 ## Exceptions and notes: `.helm-visualiser.yaml`
 

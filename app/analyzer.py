@@ -14,6 +14,7 @@ import yaml
 
 import views
 import rules
+import learnings
 import deprecations
 import exceptions
 
@@ -743,7 +744,8 @@ def analyse_chart_dir(chart_dir: Path, release="demo", namespace="default", over
     # rules catalog: chart-level Helm/Kubernetes checks + deprecated APIs, then rule IDs on everything
     kube_target = kube_target if kube_target in deprecations.TARGETS else deprecations.DEFAULT_TARGET
     objs0 = {r["id"]: r["_obj"] for r in resources}
-    extra = rules.chart_checks(files, chart, resources, objs0, vindex, namespace) + deprecations.check(resources, files, kube_target)
+    extra = rules.chart_checks(files, chart, resources, objs0, vindex, namespace) + deprecations.check(resources, files, kube_target) \
+        + learnings.check(files, chart, resources, objs0, vindex, rules.CATALOG)
     byid = {r["id"]: r for r in resources}
     for f in extra:
         f["id"] = f"f{len(findings)}"

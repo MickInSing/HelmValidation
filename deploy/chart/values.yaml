@@ -34,9 +34,9 @@ securityContext:
 resources:
   requests:
     cpu: 50m
-    memory: 96Mi
+    memory: 384Mi      # = limit: guaranteed memory, never first in line for OOM (Kubernetes Security Checklist)
   limits:
-    memory: 512Mi
+    memory: 384Mi
 
 app:
   maxUploadMB: 20
@@ -56,8 +56,8 @@ database:
       size: 2Gi
       storageClass: ""
     resources:
-      requests: { cpu: 50m, memory: 128Mi }
-      limits: { memory: 512Mi }
+      requests: { cpu: 50m, memory: 256Mi }
+      limits: { memory: 256Mi }
     backup: {}               # see CNPG docs (barmanObjectStore / plugin) to enable backups
   external:
     secretName: ""           # Secret holding a postgresql:// URL

@@ -13,7 +13,7 @@ import gitsrc
 import metrics
 from analyzer import AnalysisError, analyse_chart_dir
 
-APP_VERSION = "8"
+APP_VERSION = "10"
 BUILD = dict(version=APP_VERSION, gitSha=os.environ.get("GIT_SHA", "dev")[:12], buildDate=os.environ.get("BUILD_DATE", ""))
 GRAFANA_URL = os.environ.get("GRAFANA_URL", "")
 SCHEDULER = os.environ.get("SCHEDULER", "on") != "off"
@@ -85,6 +85,8 @@ def record(result, source, trigger, no_record=False):
     for sev, n in (result.get("counts") or {}).items():
         if n:
             metrics.inc("helmviz_findings_total", n, severity=sev)
+    for rid in {f.get("rule") for f in result.get("findings", []) if f.get("rule") and not f.get("accepted")}:
+        metrics.inc("helmviz_rule_scans_total", rule=rid)
     result["recorded"] = False
     if no_record or not db.STORE.enabled:
         return None

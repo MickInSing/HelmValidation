@@ -8,7 +8,7 @@
 }
 *{box-sizing:border-box}
 html,body{margin:0;height:100%}
-body{background:linear-gradient(160deg,#b7bdd0,#9aa2b9);font-family:var(--sans);color:var(--text);-webkit-font-smoothing:antialiased}
+body{background:#090c12;font-family:var(--sans);color:var(--text);-webkit-font-smoothing:antialiased}
 button{font:inherit;color:inherit;cursor:pointer}
 code{font-family:var(--mono);font-size:.92em;background:#2a303b;padding:1px 5px;border-radius:5px}
 .hidden{display:none!important}
@@ -305,3 +305,28 @@ button.chip:hover{border-color:var(--acc);color:#fff} .chip i{font-style:normal;
 .graph{cursor:grab;touch-action:none} .graph.panning{cursor:grabbing}
 .work.big{grid-template-rows:minmax(300px,72%) 1fr}
 .exc{font-size:12.3px;padding:8px 0;border-bottom:1px solid var(--line);line-height:1.5}.exc .rid{margin:0 4px}
+.dbstatus{font-size:12px;color:var(--muted);margin:-8px 0 16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+
+/* ---- v8.1 look: dark canvas, soft glows, floating panels */
+html{background:#090c12}
+body{position:relative;min-height:100vh;
+  background:
+    radial-gradient(1100px 680px at -5% -12%, rgba(182,92,255,.20), transparent 62%),
+    radial-gradient(1000px 760px at 108% 112%, rgba(30,155,255,.18), transparent 62%),
+    radial-gradient(760px 520px at 62% 38%, rgba(47,211,181,.05), transparent 70%),
+    #090c12}
+body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+  background-image:radial-gradient(rgba(255,255,255,.045) 1px, transparent 1px);background-size:28px 28px;
+  -webkit-mask-image:radial-gradient(ellipse at 50% 40%, #000 30%, transparent 85%);mask-image:radial-gradient(ellipse at 50% 40%, #000 30%, transparent 85%)}
+.shell{position:relative;z-index:1}
+.side,.win{background:rgba(22,26,33,.94);border:1px solid rgba(255,255,255,.07);
+  box-shadow:0 30px 80px -20px rgba(0,0,0,.7),0 0 0 1px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.05)}
+.at-home .tb-chart{display:none!important}
+.homebtn{display:inline-flex;align-items:center;gap:7px;background:#20252e;border:1px solid var(--line2);border-radius:10px;padding:7px 12px;font-size:13px;color:#e8ebf1}
+.homebtn svg{width:16px;height:16px}
+.homebtn:hover{border-color:var(--blue);background:#17304c}
+.backbtn{margin-left:8px;background:var(--blue)!important;color:#fff!important;font-weight:600}
+.backbtn:hover{filter:brightness(1.1)}
+.brand-link{cursor:pointer}
+.brand-link:hover .brand-t{color:#fff}
+.cat.Learnings{background:rgba(255,138,61,.16);color:#ffb27a}

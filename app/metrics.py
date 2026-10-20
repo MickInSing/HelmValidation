@@ -15,6 +15,7 @@ HELP = {
     "helmviz_db_writes_total": ("counter", "Scan-history writes by result"),
     "helmviz_scheduled_runs_total": ("counter", "Scheduled rescans by result"),
     "helmviz_scan_duration_seconds": ("histogram", "Time to analyse a chart"),
+    "helmviz_rule_scans_total": ("counter", "Scans in which each rule failed (accepted findings excluded)"),
 }
 
 
@@ -33,6 +34,20 @@ def observe(name, seconds, **labels):
                 h[i] += 1
         h[-2] += seconds
         h[-1] += 1
+
+
+def snapshot():
+    """In-process totals since start (works without the database)."""
+    with _lock:
+        c = dict(_counters)
+    scans = {}
+    for (name, labels), v in c.items():
+        if name == "helmviz_scans_total":
+            st = dict(labels).get("status", "?")
+            scans[st] = scans.get(st, 0) + v
+    sev = {dict(l).get("severity"): v for (n, l), v in c.items() if n == "helmviz_findings_total"}
+    rule_scans = {dict(l).get("rule"): v for (n, l), v in c.items() if n == "helmviz_rule_scans_total"}
+    return dict(since=int(START), scans=sum(scans.values()), byStatus=scans, findings=sev, ruleScans=rule_scans)
 
 
 def _lbl(pairs, extra=()):

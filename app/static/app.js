@@ -149,7 +149,30 @@ $("#folder").onchange = (e) => {
   e.target.value = ""; uploadFolder(entries);
 };
 $("#btn-sample").onclick = (e) => { e.stopPropagation(); run({ kind: "sample" }, "Loading sample chart…"); };
-$("#btn-new").onclick = () => { closeDrawer(); $("#panel2").classList.add("hidden"); $("#btn-compare").classList.add("hidden"); $("#btn-watch").classList.add("hidden"); $("#btn-share").classList.add("hidden"); history.replaceState(null, "", location.pathname); $("#btn-values").classList.add("hidden"); $("#work").classList.add("hidden"); $("#landing").classList.remove("hidden"); $("#btn-new").classList.add("hidden"); showErr(""); };
+$("#btn-new").onclick = () => showHome("scan");
+function showHome(tab) {
+  closeDrawer(); $("#panel2").classList.add("hidden"); $("#tip").classList.add("hidden");
+  $("#work").classList.add("hidden"); $("#landing").classList.remove("hidden");
+  document.body.classList.add("at-home");
+  $("#btn-home").classList.add("hidden"); $("#btn-new").classList.add("hidden");
+  const b = $("#btn-back");
+  b.classList.toggle("hidden", !D);
+  if (D) b.textContent = `← Back to ${D.chart && D.chart.name ? D.chart.name : "chart"}`;
+  showErr("");
+  history.replaceState(null, "", location.pathname + (tab && tab !== "scan" ? `?home=${tab}` : ""));
+  setHome(tab || homeTab);
+}
+function showWork() {
+  if (!D) return;
+  $("#landing").classList.add("hidden"); $("#work").classList.remove("hidden");
+  document.body.classList.remove("at-home");
+  $("#btn-home").classList.remove("hidden"); $("#btn-new").classList.remove("hidden");
+  const link = shareUrl(); if (link) history.replaceState(null, "", link);
+  Z.keep = false; buildGraph(); go(curBy[view]);
+}
+$("#btn-home").onclick = () => showHome();
+$("#btn-back").onclick = showWork;
+$("#brand-home").onclick = () => showHome();
 // --- charts from the folder mounted into the container (works even when the browser blocks uploads)
 async function refreshLocal() {
   const sel = $("#localsel"), hint = $("#localhint");
@@ -202,6 +225,7 @@ function load(data) {
   })));
   D.byId = Object.fromEntries(D.nodes.map((r) => [r.id, r]));
   $("#landing").classList.add("hidden"); $("#work").classList.remove("hidden"); $("#btn-new").classList.remove("hidden");
+  $("#btn-home").classList.remove("hidden"); $("#btn-back").classList.add("hidden"); document.body.classList.remove("at-home");
   const c = D.chart;
   $("#crumb").innerHTML = `${esc(c.name)} <span>/</span> v${esc(c.version)} <span>/</span> release <b>${esc(D.release)}</b> in <b>${esc(D.namespace)}</b>`;
   Z.keep = false;
@@ -757,6 +781,7 @@ document.addEventListener("keydown", (e) => {
   if (!D || /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;
   if (e.key === "ArrowRight" || e.key === "j") go(cur + 1);
   if (e.key === "ArrowLeft" || e.key === "k") go(cur - 1);
+  if (e.key === "h") return showHome();
   if (e.key === "1") setView("chart");
   if (e.key === "2") setView("helm");
   if (e.key === "3") setView("infra");
@@ -863,38 +888,65 @@ function setHome(t, opts = {}) {
   if (t === "watch") renderWatch();
 }
 document.querySelectorAll(".hometabs button").forEach((b) => (b.onclick = () => setHome(b.dataset.home)));
-function goHome(t) { if (!$("#landing").classList.contains("hidden")) return setHome(t); $("#btn-new").click(); setHome(t); }
+function goHome(t) { showHome(t); }
 
 // ---- Best practices (rules catalog)
 let CAT = null, catFilter = "all", catQuery = "";
+function metricCards(st, live, err, info) {
+  const fromDb = st && st.totals && st.totals.scans;
+  const L = live || { scans: 0, byStatus: {}, findings: {}, ruleScans: {} };
+  const topLive = Object.entries(L.ruleScans || {}).sort((a, b) => b[1] - a[1])[0];
+  const card = (v, l, cls = "") => `<div class="card"><div class="v ${cls}">${v}</div><div class="l">${l}</div></div>`;
+  let cards;
+  if (fromDb) {
+    cards = card(st.totals.scans, "scans, last 30 days") + card(st.totals.repos, "repositories") +
+      card(st.totals.avg_score ?? "–", "average score", scoreCls(st.totals.avg_score)) +
+      card(st.topRules[0] ? `<span style="font-size:15px">${esc(st.topRules[0].rule_id)}</span>` : "–", st.topRules[0] ? `most-failed rule · ${st.topRules[0].scans} scans` : "most-failed rule") +
+      card(st.totals.last ? ago(st.totals.last) : "–", "last scan");
+  } else {
+    const f = L.findings || {};
+    cards = card(L.scans || 0, "scans since this server started") +
+      card((L.byStatus || {}).ok || 0, "rendered OK") +
+      card(((L.byStatus || {}).render_failed || 0) + ((L.byStatus || {}).error || 0), "failed / errored") +
+      card((f.critical || 0) + (f.high || 0), "critical + high findings", (f.critical || f.high) ? "sp-bad" : "") +
+      card(topLive ? `<span style="font-size:15px">${esc(topLive[0])}</span>` : "–", "most-failed rule");
+  }
+  const db = info && info.db;
+  const status = db && db.enabled
+    ? (err ? `<span class="st bad">history error</span> ${esc(err)}` : db.up ? `<span class="st ok">history connected</span> 30-day stats from the scan database, kept ${db.retentionDays} days.`
+      : `<span class="st warn">history unreachable</span> ${esc(db.error || "")}`)
+    : `<span class="st none">history off</span> Showing totals since this server started. Run the full stack (<code>docker compose up</code>) to keep history.`;
+  const empty = !fromDb && !(L.scans) ? `<div class="hint muted" style="margin-top:6px">No scans yet. Scan a chart and come back: the cards and the “Fails in” column fill in.</div>` : "";
+  return `<div class="cards">${cards}</div><div class="dbstatus">${status}</div>${empty}`;
+}
 async function renderRules(focus) {
   const el = $("#hp-rules");
-  try { CAT = CAT || (await api("/api/rules")); } catch (e) { el.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  // always refetch: the metrics change every time you scan
+  try { CAT = await api("/api/rules"); } catch (e) { if (!CAT) { el.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; } }
   RULES = Object.fromEntries(CAT.rules.map((r) => [r.id, r]));
   const rs = CAT.ruleset, st = CAT.stats, info = CAT.info;
-  const cats = ["CKS", "Kubernetes", "Helm"];
+  const cats = ["CKS", "Kubernetes", "Helm", "Learnings"];
   const head = `<div class="hp-h"><h2>Helm &amp; Kubernetes best practices</h2><span class="muted">Ruleset <b>${esc(rs.version)}</b> · last updated <b>${esc(rs.updated)}</b></span></div>
-    <div class="hp-sub">${CAT.rules.length} checks across CKS (${CAT.rules.filter((r) => r.category === "CKS").length}), Kubernetes (${CAT.rules.filter((r) => r.category === "Kubernetes").length}) and Helm (${CAT.rules.filter((r) => r.category === "Helm").length}).
+    <div class="hp-sub">${CAT.rules.length} checks: CKS (${CAT.rules.filter((r) => r.category === "CKS").length}), Kubernetes (${CAT.rules.filter((r) => r.category === "Kubernetes").length}), Helm (${CAT.rules.filter((r) => r.category === "Helm").length})
+      and <b>Learnings</b> (${CAT.rules.filter((r) => r.category === "Learnings").length}): security &amp; performance practices from OWASP Kubernetes Top 10 (2025), the Kubernetes Security Checklist, NSA/CISA, Prometheus, Grafana, CloudNativePG and Helm guidance.
       Running with Helm ${esc(info.helm)}; deprecated-API data: ${esc(rs.sources.kubernetes.split("(")[1]?.replace(")", "") || "")}.
       Sources: ${esc(rs.sources.kubernetes.split(" (")[0])}; ${esc(rs.sources.helm)}; ${esc(rs.sources.cks)}.
       Every scan records the ruleset version, so scores from different rulesets aren't compared as if they were equal.</div>
-    ${st ? `<div class="cards">
-      <div class="card"><div class="v">${st.totals.scans ?? 0}</div><div class="l">scans, last 30 days</div></div>
-      <div class="card"><div class="v">${st.totals.repos ?? 0}</div><div class="l">repositories</div></div>
-      <div class="card"><div class="v ${scoreCls(st.totals.avg_score)}">${st.totals.avg_score ?? "–"}</div><div class="l">average score</div></div>
-      <div class="card"><div class="v" style="font-size:15px">${st.topRules[0] ? esc(st.topRules[0].rule_id) : "–"}</div><div class="l">most-failed rule</div></div></div>` : ""}
+    ${metricCards(st, CAT.live, CAT.statsError, info)}
     <div class="filters">${["all", ...cats].map((c) => `<button data-c="${c}" class="${catFilter === c ? "on" : ""}">${c === "all" ? "All" : c}</button>`).join("")}
       <input id="rq" placeholder="Search rules (ID, title, fix…)" value="${esc(catQuery)}"></div>`;
   const rows = CAT.rules.filter((r) => (catFilter === "all" || r.category === catFilter) &&
     (!catQuery || (r.id + r.title + r.why + r.fix + r.domain).toLowerCase().includes(catQuery.toLowerCase())));
-  const rate = (id) => (st && st.failRate ? st.failRate[id] : undefined);
-  el.innerHTML = head + `<table class="rtbl"><thead><tr><th>Rule</th><th>Severity</th><th>Check</th><th>Fails in</th><th>Updated</th></tr></thead><tbody>` +
+  const live = CAT.live || {};
+  const rate = (id) => (st && st.failRate && st.totals.scans ? st.failRate[id] ?? 0
+    : live.scans ? Math.round((100 * (live.ruleScans[id] || 0)) / live.scans) : undefined);
+  el.innerHTML = head + `<table class="rtbl"><thead><tr><th>Rule</th><th>Severity</th><th>Check</th><th title="Share of scans in which this rule failed">Fails in</th><th>Updated</th></tr></thead><tbody>` +
     rows.map((r) => `<tr id="rule-${esc(r.id)}" class="${r.id === focus ? "hl" : ""}">
       <td><div class="rid">${esc(r.id)}</div><span class="cat ${esc(r.category)}">${esc(r.category)}</span>${r.domain ? `<div class="muted" style="font-size:11px;margin-top:4px">${esc(r.domain)}</div>` : ""}</td>
       <td><span class="pill ${esc(r.severity)}">${esc(r.severity)}</span></td>
       <td><b>${esc(r.title)}</b><div class="why">${esc(r.why)}</div><div class="fixc">${esc(r.fix)}</div>
         <div class="refs">${r.refs.map((x) => `<a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">${esc(x.title)} ↗</a>`).join("")}</div></td>
-      <td class="rate">${rate(r.id) === undefined ? '<span class="muted">–</span>' : `${rate(r.id)}% of scans<i style="width:${Math.max(2, rate(r.id) * 0.8)}px"></i>`}</td>
+      <td class="rate">${rate(r.id) === undefined ? '<span class="muted">–</span>' : `${rate(r.id)}% of scans${rate(r.id) ? `<i style="width:${Math.max(3, rate(r.id) * 0.8)}px"></i>` : ""}`}</td>
       <td class="muted" style="white-space:nowrap">${esc(r.updated)}</td></tr>`).join("") + `</tbody></table>` +
     (rows.length ? "" : `<div class="empty">No rules match.</div>`);
   el.querySelectorAll(".filters button").forEach((b) => (b.onclick = () => { catFilter = b.dataset.c; renderRules(); }));

@@ -6,12 +6,13 @@ ruleset version, so scores from different rulesets are never compared as if they
 import re
 
 RULESET = {
-    "version": "2026.10.1",
+    "version": "2026.10.2",
     "updated": "2026-10-20",
     "sources": {
         "kubernetes": "Pod Security Standards, RBAC/Secrets good practices, Deprecated API Migration Guide (removals up to v1.32; none scheduled in v1.33-v1.36 docs)",
         "helm": "Helm 4 Chart Best Practices + Chart Template Guide",
         "cks": "CNCF CKS curriculum domains",
+        "learnings": "OWASP Kubernetes Top 10 (2025), Kubernetes Security Checklist, NSA/CISA Hardening Guidance, Prometheus security model, Grafana hardening, CloudNativePG security, Helm provenance",
     },
 }
 
@@ -173,6 +174,10 @@ rule("HELM-DEP-001", "Helm", "low", "Dependencies are locked (Chart.lock)",
 rule("HELM-DEP-002", "Helm", "low", "Dependency versions are constrained",
      "'*' or 'x' ranges pull in any new major version.", "Use a range like ~1.2.0 or ^1.2.0.",
      [(BP + "dependencies/#versions", "Dependency versions")])
+
+# --- Learnings: public security & performance guidance for our stack (see learnings.py for sources)
+import learnings  # noqa: E402
+learnings.register(rule)
 
 CATALOG = {r["id"]: r for r in _R}
 

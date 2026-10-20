@@ -170,12 +170,14 @@ class Handler(SimpleHTTPRequestHandler):
         if p == "/api/local":
             return self._json(200, dict(self._info(), dir=str(CHARTS_DIR), mounted=CHARTS_DIR.is_dir(), charts=list_local_charts()))
         if p == "/api/rules":
-            out = dict(rules.catalog(), info=self._info(), stats=None)
+            out = dict(rules.catalog(), info=self._info(), stats=None, statsError=None, live=metrics.snapshot())
             if db.STORE.enabled:
                 try:
                     out["stats"] = db.STORE.stats()
-                except Exception:
-                    pass
+                except Exception as e:
+                    out["statsError"] = str(e)[:240]
+            else:
+                out["statsError"] = db.STORE.last_error or "scan history is off"
             return self._json(200, out)
         if p in ("/api/history", "/api/stats", "/api/repos"):
             if not db.STORE.enabled:
