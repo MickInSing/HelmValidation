@@ -1,0 +1,13 @@
+Helm visualiser {{ .Values.image.tag }} is running in namespace {{ .Release.Namespace }}.
+{{- if .Values.ingress.enabled }}
+
+Open: http{{ if .Values.ingress.tls }}s{{ end }}://{{ .Values.ingress.host }}/
+{{- else }}
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "helm-visualiser.fullname" . }} 8080:{{ .Values.service.port }}
+  open http://127.0.0.1:8080
+{{- end }}
+{{- if not .Values.ingress.annotations }}
+
+Note: there is no login. Keep it internal or put SSO (oauth2-proxy) in front of the ingress.
+{{- end }}

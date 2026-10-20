@@ -1,0 +1,19 @@
+services:
+  helm-visualiser:
+    build: .
+    image: helm-visualiser:local
+    container_name: helm-visualiser
+    ports:
+      - "127.0.0.1:8080:8080"   # local only
+    read_only: true
+    volumes:
+      # Charts on your Mac the app can open directly (no browser upload needed).
+      # Defaults to ~/charts; override with CHARTS_DIR=/some/path docker compose up -d
+      - ${CHARTS_DIR:-${HOME}/charts}:/charts:ro
+    tmpfs:
+      - /tmp:size=128m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    restart: unless-stopped

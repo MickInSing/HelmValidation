@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Helm Chart Walkthrough</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231e9bff'/%3E%3Cpath d='M16 6v20M6 16h20M9 9l14 14M23 9 9 23' stroke='white' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css?v=8">
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <div class="brand">
+      <svg viewBox="0 0 40 40" class="logo" aria-hidden="true">
+        <rect x="15" y="4" width="10" height="9" rx="2"/><rect x="3" y="27" width="10" height="9" rx="2"/>
+        <rect x="15" y="27" width="10" height="9" rx="2"/><rect x="27" y="27" width="10" height="9" rx="2"/>
+        <path d="M20 13v14M8 27v-5h24v5" fill="none" stroke-width="2.5"/>
+      </svg>
+      <div><div class="brand-t">Helm Chart</div><div class="brand-t">Walkthrough</div></div>
+    </div>
+    <div id="views" class="views hidden" role="tablist" aria-label="View">
+      <button data-v="chart" class="on" title="Chart & resources (1)"><svg viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z M12 12l8-4.5 M12 12v9 M12 12L4 7.5"/></svg>Chart</button>
+      <button data-v="helm" title="Helm concepts (2)"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4v16 M4 12h16 M6.3 6.3l11.4 11.4 M17.7 6.3 6.3 17.7"/></svg>Helm concepts</button>
+      <button data-v="infra" title="Infrastructure (3)"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="5" rx="1.5"/><rect x="3" y="15" width="18" height="5" rx="1.5"/><path d="M7 6.5h.01 M7 17.5h.01 M12 9v6"/></svg>Infrastructure</button>
+    </div>
+    <nav id="steps" class="steps"><div class="muted pad">Load a chart to start.</div></nav>
+    <div id="scorebox" class="scorebox hidden"></div>
+  </aside>
+
+  <main class="win">
+    <header class="titlebar">
+      <div id="crumb" class="crumb">Helm Visualiser <span>/</span> No chart loaded</div>
+      <div class="tb-actions">
+        <button id="btn-values" class="ghost hidden">Values <span id="vals-badge" class="vbadge hidden"></span></button>
+        <button id="btn-new" class="ghost hidden">Load another chart</button>
+      </div>
+    </header>
+
+    <!-- Empty / upload state -->
+    <section id="landing" class="landing">
+      <div id="drop" class="drop" tabindex="0">
+        <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M24 32V12m0 0-8 8m8-8 8 8M10 34v4h28v-4" fill="none" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <h2>Drop a Helm chart here</h2>
+        <p>A chart folder, a packaged <code>.tgz</code> (from <code>helm package</code>) or a <code>.zip</code>.</p>
+        <input id="file" type="file" hidden>
+        <input id="folder" type="file" webkitdirectory directory multiple hidden>
+        <div class="row">
+          <button id="btn-pick" class="primary">Choose .tgz / .zip</button>
+          <button id="btn-folder" class="primary">Choose chart folder</button>
+          <button id="btn-sample" class="ghost">Try the sample chart</button>
+        </div>
+        <div class="local">
+          <div class="local-h">Or open one from your charts folder <span id="localdir" class="muted"></span></div>
+          <div class="row">
+            <select id="localsel" aria-label="Charts in mounted folder"><option value="">Loading…</option></select>
+            <button id="btn-local" class="primary">Open</button>
+            <button id="btn-refresh" class="ghost" title="Rescan folder">↻</button>
+          </div>
+          <div id="localhint" class="muted hint hidden"></div>
+        </div>
+        <div id="status" class="status hidden"></div>
+        <div id="ver" class="ver">script not loaded</div>
+        <div class="row opts">
+          <label>Release <input id="rel" value="demo" spellcheck="false"></label>
+          <label>Namespace <input id="ns" value="default" spellcheck="false"></label>
+        </div>
+        <div id="err" class="err hidden"></div>
+      </div>
+    </section>
+
+    <!-- Walkthrough -->
+    <section id="work" class="work hidden">
+      <div class="stage">
+        <div class="seg" role="tablist">
+          <button data-mode="template" class="on" title="The chart source with {{ }} template code"><svg viewBox="0 0 20 20"><path d="M7 5 3 10l4 5M13 5l4 5-4 5" fill="none" stroke-width="1.8" stroke-linecap="round"/></svg>Template</button>
+          <button data-mode="rendered" title="The final YAML helm produced"><svg viewBox="0 0 20 20"><path d="M5 3h7l3 3v11H5z M8 10h5 M8 13h5" fill="none" stroke-width="1.6" stroke-linejoin="round"/></svg>Rendered</button>
+          <button data-mode="split" title="Template and rendered output side by side"><svg viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="12" rx="2" fill="none" stroke-width="1.6"/><path d="M10 4v12" fill="none" stroke-width="1.6"/></svg>Side by side</button>
+        </div>
+        <div class="legend" id="legend"></div>
+        <svg id="graph" class="graph" aria-label="Chart resource diagram"></svg>
+        <div class="nav">
+          <button id="prev" class="navbtn" aria-label="Previous step">&#8592;</button>
+          <div id="stepnum" class="stepnum"></div>
+          <button id="next" class="navbtn primary" aria-label="Next step">&#8594;</button>
+        </div>
+      </div>
+      <div class="lower">
+        <article class="explain">
+          <div class="ex-head"><span id="ex-kicker" class="kicker"></span><h1 id="ex-title"></h1></div>
+          <div id="ex-body" class="ex-body"></div>
+          <div id="ex-extra"></div>
+          <div id="ex-ptrs" class="ptrs"></div>
+          <div id="ex-find" class="finds"></div>
+        </article>
+        <article class="code">
+          <div id="tabs" class="tabs"></div>
+          <div id="codeview" class="codeview"></div>
+        </article>
+      </div>
+    </section>
+    <aside id="drawer" class="drawer hidden" aria-label="Values">
+      <div class="dr-head"><h2>Values</h2><button id="dr-close" class="ghost" aria-label="Close">✕</button></div>
+      <div id="dr-err" class="dr-err hidden"></div>
+      <button id="dr-preview" class="primary wide hidden">Just show me the diagram: preview with placeholders</button>
+      <div id="dr-req" class="dr-sec hidden"></div>
+      <div id="dr-vf" class="dr-sec hidden"></div>
+      <div class="dr-sec">
+        <h3>Overrides</h3>
+        <p class="muted">Any of these work:</p>
+        <ul class="muted">
+          <li>YAML, like a <code>-f my-values.yaml</code></li>
+          <li>One <code>key=value</code> per line, like Argo <code>parameters</code> / <code>--set</code></li>
+          <li>Paste the whole ArgoCD <code>Application</code> manifest. Its parameters, values, valuesObject and valueFiles are applied the way Argo would.</li>
+        </ul>
+        <textarea id="dr-text" spellcheck="false" placeholder="orgID: my-org&#10;clusterName: my-cluster"></textarea>
+        <label class="vf"><input type="checkbox" id="dr-bypass"> Bypass <code>fail</code>/<code>required</code> checks (preview only)</label>
+        <div class="row left">
+          <button id="dr-run" class="primary">Re-render</button>
+          <button id="dr-fill" class="ghost hidden">Insert required keys</button>
+          <button id="dr-clear" class="ghost">Clear</button>
+        </div>
+        <p class="muted small">Values are only used for this render. They aren't saved anywhere.</p>
+      </div>
+    </aside>
+  </main>
+</div>
+<div id="tip" class="tip hidden"></div>
+<script src="app.js?v=8"></script>
+</body>
+</html>

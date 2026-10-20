@@ -1,0 +1,6 @@
+apiVersion: v2
+name: webshop
+description: Sample chart for the Helm visualiser - a small web app with a mix of good and not-so-good practices.
+type: application
+version: 0.3.0
+appVersion: "1.27.2"

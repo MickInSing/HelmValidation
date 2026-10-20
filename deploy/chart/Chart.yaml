@@ -1,0 +1,11 @@
+apiVersion: v2
+name: helm-visualiser
+description: Step-by-step Helm chart walkthrough with CKS checks, Helm concepts and infrastructure views.
+type: application
+version: 0.1.0
+appVersion: "6"
+home: https://github.com/MickInSing/helm-visualiser
+sources:
+  - https://github.com/MickInSing/helm-visualiser
+maintainers:
+  - name: MickInSing

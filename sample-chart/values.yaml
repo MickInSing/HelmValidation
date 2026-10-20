@@ -1,0 +1,67 @@
+# Default values for webshop.
+replicaCount: 2
+
+image:
+  repository: nginxinc/nginx-unprivileged
+  # Empty tag falls back to .Chart.AppVersion - but pullPolicy Always + latest elsewhere is a smell
+  tag: ""
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  create: true
+  automount: false
+  name: ""
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 101
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: true
+  className: nginx
+  host: shop.local
+  tls: []
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 128Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+
+config:
+  greeting: "Welcome to the webshop"
+
+# Committed credentials - the walkthrough will flag this
+database:
+  user: shop
+  password: changeme
+
+rbac:
+  create: true
+
+networkPolicy:
+  enabled: false
+
+# Sidecar that exports metrics - intentionally NOT hardened
+metrics:
+  enabled: true
+  image: prom/nginx-exporter:latest

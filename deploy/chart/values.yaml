@@ -1,0 +1,71 @@
+# Default values for helm-visualiser. Secure by default: the chart should pass its own checks.
+
+image:
+  repository: ghcr.io/mickinsing/helm-visualiser
+  tag: "main"  # ci:image-tag  (CI pins this to sha-xxxxxxx on every build of main)
+  pullPolicy: IfNotPresent
+
+# GHCR packages are private by default. Either make the package public, or create a pull secret:
+#   kubectl -n helm-visualiser create secret docker-registry ghcr \
+#     --docker-server=ghcr.io --docker-username=MickInSing --docker-password=<PAT with read:packages>
+imagePullSecrets: []
+#  - name: ghcr
+
+replicaCount: 1
+
+serviceAccount:
+  create: true
+  name: ""
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 96Mi
+  limits:
+    memory: 384Mi
+
+app:
+  maxUploadMB: 20
+  helmTimeoutSeconds: 30
+
+# scratch space for uploads and helm caches (the root filesystem is read-only)
+tmp:
+  sizeLimit: 256Mi
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  host: helm-visualiser.example.internal
+  annotations: {}
+    # Put SSO in front of it - anyone who reaches it can make the server run helm on a chart.
+    # nginx.ingress.kubernetes.io/auth-url: "https://oauth2-proxy.example.internal/oauth2/auth"
+    # nginx.ingress.kubernetes.io/auth-signin: "https://oauth2-proxy.example.internal/oauth2/start?rd=$escaped_request_uri"
+  tls: []
+  #  - secretName: helm-visualiser-tls
+  #    hosts: [helm-visualiser.example.internal]
+
+networkPolicy:
+  enabled: true
+  # Namespaces allowed to reach the UI (e.g. your ingress controller). Empty = same namespace only.
+  allowFromNamespaces: []
+  #  - ingress-nginx
+  # The app needs no outbound access. Charts with remote dependencies must vendor charts/.
+  allowEgress: false

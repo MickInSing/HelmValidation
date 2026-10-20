@@ -1,0 +1,6 @@
+Webshop {{ .Chart.AppVersion }} is installed as release {{ .Release.Name }}.
+{{- if .Values.ingress.enabled }}
+Open http://{{ .Values.ingress.host }}/
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "webshop.fullname" . }} 8080:{{ .Values.service.port }}
+{{- end }}

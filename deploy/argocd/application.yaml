@@ -1,0 +1,39 @@
+# kubectl apply -n argocd -f deploy/argocd/application.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: helm-visualiser
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/MickInSing/helm-visualiser.git
+    targetRevision: main
+    path: deploy/chart
+    helm:
+      releaseName: helm-visualiser
+      # Override per cluster here, e.g.:
+      # valuesObject:
+      #   ingress:
+      #     enabled: true
+      #     className: nginx
+      #     host: helm-visualiser.my-cluster.internal
+      #   networkPolicy:
+      #     allowFromNamespaces: [ingress-nginx]
+      #   imagePullSecrets:
+      #     - name: ghcr
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: helm-visualiser
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    managedNamespaceMetadata:
+      labels:
+        pod-security.kubernetes.io/enforce: restricted
+        pod-security.kubernetes.io/warn: restricted
