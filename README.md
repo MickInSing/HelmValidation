@@ -39,6 +39,7 @@ The stack is the app, Postgres 17 (scan history), Prometheus v3.15 (app metrics)
 ## Inside a chart
 
 * **Home** (top left, or `h`) goes back to the home tabs without closing the chart; **← Back to chart** returns to it.
+* **Infrastructure → Pods**: see the Pods view below.
 * **Chart / Helm concepts / Infrastructure** tabs in the sidebar (keys `1` `2` `3`).
 * **Template / Rendered / Side by side** code views (`t` cycles).
 * **Diagram zoom & pan**: scroll to zoom, drag to pan, double-click to zoom in, `+` / `-` / `0` (fit), `f` or ⇕ for a taller diagram. Large charts get a wider canvas instead of squashed nodes, and the active node is kept in view.
@@ -76,6 +77,48 @@ Twenty extra checks (`LRN-SEC-*`, `LRN-PERF-*`) drawn from the [OWASP Kubernetes
 | LRN-PERF-006 | CloudNativePG: ≥2 instances, backups configured, superuser access off | CloudNativePG docs |
 
 Grafana settings are read from `GF_*` env vars and from a `grafana.ini` in a ConfigMap (the Grafana Helm chart's layout).
+
+## Pods view (Infrastructure → Pods)
+
+Toggle **Architecture | Pods** at the top right of the Infrastructure diagram. The Pods view shows what the rendered chart asks Kubernetes to run:
+
+* **Edge → Services → Namespace → Config & storage**, with port mappings on the arrows.
+* **Workloads and their pods:**
+  * a card per minimum replica, plus dashed cards for what the HPA can add (e.g. 2–5, cpu 70%);
+  * StatefulSets get ordinal names and per-replica volumes, DaemonSets show "one on every node", and Jobs and CronJobs show dashed runs with their schedule.
+* **Inside each pod:** containers (main, sidecar, init) with image, ports, CPU and memory, hardening, probes and finding badges; mounted ConfigMaps, Secrets and volumes; and the ServiceAccount (flagged if a token is mounted).
+* **Overlays:** the NetworkPolicy fence around the namespace, PDB chips, a warning when replicas aren't spread, and pods laid out across zones when a zone spread rule is set.
+* **Current chart | With fixes:** shows the pods after the fix planner's preview (it runs one with every previewable fix if you haven't).
+* **Click a pod:** its details and findings appear below, and the code panel jumps to its template.
+* **Official logos** (Kubernetes, Helm, Prometheus, Grafana, PostgreSQL, Redis, NGINX, Argo): the image build downloads them from Simple Icons, CC0 (`SIMPLE_ICONS_VERSION`). Without network at build time, a neutral badge is shown instead. Trademarks belong to their owners.
+
+* **Operator-created pods (external):** when the chart contains a custom resource an operator turns into pods, those pods are drawn in orange, dashed, under "Created by operators". Supported: CloudNativePG `Cluster` / `Pooler`, Zalando `postgresql`, Prometheus Operator `Prometheus` / `Alertmanager`, and Strimzi `Kafka`. The view shows the instance count, roles, storage, and the Services and Secrets the operator creates.
+  * **Connections:** an arrow runs from each workload that references those Secrets or Services, directly or through a ConfigMap. It is labelled with the port and the reference, and coloured by the workload's egress NetworkPolicy: **allowed**, **blocked** (connections would time out), **check policy** (ipBlock or label expressions), or **no egress policy**.
+  * Secrets the operator creates are no longer listed as "must already exist".
+* **With fixes highlights the change in place:**
+  * a green bar lists every changed resource and its rules; click one to jump to it;
+  * changed workloads get a green outline and a "Fixed here" line;
+  * anything a fix added (hardening, probes, PDB, spread, new pods, new resources, TLS) is green with a "+".
+
+This is the chart's *request*, not live cluster state: no node names, pod status or restarts.
+
+## Shortcuts and layout
+
+* **Hardening score** (left panel): **Fix planner →** opens the planner for this chart; **Show fixes on Pods** opens Infrastructure → Pods → With fixes. Clicking the score ring opens the planner too.
+* **Adjustable frames:** drag the bar between the diagram and the panels below, or between the explanation and the code. Double-click a bar to reset it. Your sizes are remembered in this browser.
+
+## Fix planner (Best practices tab)
+
+1. **Pick a chart**: the one you have open, or any Git chart from Watched / History (it's scanned on the spot).
+2. **Pick the fixes**: the chart's failing rules, grouped by framework. Rules marked **preview** can be applied to the rendered chart; **prompt only** rules need a template decision and go straight into the prompt. Quick-select high + critical, all previewable, all, or clear. **Severity toggles** (Critical / High / Medium / Low / Info) show or hide each level: turning one on selects its rules, turning it off clears them. By default only Critical and High are on.
+3. **Preview impact**: the fixes are applied to a copy of the *rendered* manifests (like Helm's `--post-renderer`), and the result is re-checked. You see:
+   * the score before and after, and the findings fixed (and any introduced);
+   * every change with its **risk**, e.g. *read-only root FS breaks apps that write outside /tmp*, *drop ALL breaks ports < 1024*, *default-deny blocks the ingress controller*;
+   * a **side-by-side** of each changed or new resource, current vs with fixes.
+4. **Claude prompt**: copy or download a Markdown prompt with the rules, why they matter, the exact changes, the risks to handle, the target rendered YAML and the current chart source (secrets redacted). It asks Claude to implement the fixes in **templates and values with secure defaults**, keep backwards compatibility, record anything not fixed in `.helm-visualiser.yaml`, bump `Chart.yaml` `version` (minor if values were added, else patch), and re-run the check.
+5. **Git commands**: a ready-made branch name, plus clone (or `gh repo fork` if you can't push), branch, verify, commit, push and `gh pr create`. The visualiser never holds a write token; the PR check action then comments the before/after score on the PR.
+
+The preview shows what the cluster would receive, not template edits. Placeholder values (resource sizes, oauth2-proxy URLs, TLS secret names) are flagged in the risks for Claude to replace.
 
 ## Exceptions and notes: `.helm-visualiser.yaml`
 

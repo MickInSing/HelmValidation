@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Helm Chart Walkthrough</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231e9bff'/%3E%3Cpath d='M16 6v20M6 16h20M9 9l14 14M23 9 9 23' stroke='white' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="style.css?v=12">
+<link rel="stylesheet" href="style.css?v=18">
 </head>
 <body class="at-home">
 <div class="shell">
@@ -119,12 +119,20 @@
           <button id="z-fit" title="Fit to view (0)">⤢</button><button id="z-big" title="Bigger diagram (f)">⇕</button>
         </div>
         <svg id="graph" class="graph" aria-label="Chart resource diagram"></svg>
+        <div id="imode" class="seg imode hidden" role="tablist" aria-label="Infrastructure view">
+          <button data-im="arch" class="on">Architecture</button><button data-im="pods">Pods</button>
+          <span class="imode-sep"></span>
+          <button data-pf="current" class="pf on hidden">Current chart</button><button data-pf="fixed" class="pf hidden">With fixes</button>
+          <span id="pf-score" class="pf-score hidden"></span>
+        </div>
+        <div id="podsview" class="podsview hidden"><div class="pv-inner" id="pv-inner"></div></div>
         <div class="nav">
           <button id="prev" class="navbtn" aria-label="Previous step">&#8592;</button>
           <div id="stepnum" class="stepnum"></div>
           <button id="next" class="navbtn primary" aria-label="Next step">&#8594;</button>
         </div>
       </div>
+      <div class="hsplit" id="hsplit" role="separator" aria-orientation="horizontal" title="Drag to resize · double-click to reset"></div>
       <div class="lower">
         <article class="explain">
           <div class="ex-head"><span id="ex-kicker" class="kicker"></span><h1 id="ex-title"></h1></div>
@@ -133,6 +141,7 @@
           <div id="ex-ptrs" class="ptrs"></div>
           <div id="ex-find" class="finds"></div>
         </article>
+        <div class="vsplit" id="vsplit" role="separator" aria-orientation="vertical" title="Drag to resize · double-click to reset"></div>
         <article class="code">
           <div id="tabs" class="tabs"></div>
           <div id="codeview" class="codeview"></div>
@@ -171,6 +180,6 @@
   </main>
 </div>
 <div id="tip" class="tip hidden"></div>
-<script src="app.js?v=12"></script>
+<script src="app.js?v=18"></script>
 </body>
 </html>

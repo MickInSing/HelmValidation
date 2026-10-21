@@ -33,6 +33,7 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 
 import db
+import fixes
 import deprecations
 import gitsrc
 import metrics
@@ -170,7 +171,7 @@ class Handler(SimpleHTTPRequestHandler):
         if p == "/api/local":
             return self._json(200, dict(self._info(), dir=str(CHARTS_DIR), mounted=CHARTS_DIR.is_dir(), charts=list_local_charts()))
         if p == "/api/rules":
-            out = dict(rules.catalog(), info=self._info(), stats=None, statsError=None, live=metrics.snapshot())
+            out = dict(rules.catalog(), fixability={r["id"]: fixes.fixability(r["id"]) for r in rules._R}, info=self._info(), stats=None, statsError=None, live=metrics.snapshot())
             if db.STORE.enabled:
                 try:
                     out["stats"] = db.STORE.stats()
@@ -244,6 +245,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._upload()
         if p == "/api/scan":
             return self._api_scan()
+        if p == "/api/fixplan":
+            return self._fixplan()
         m = re.fullmatch(r"/api/repos(?:/(\d+))?(/run)?", p)
         if m:
             return self._repos_write(m.group(1), bool(m.group(2)))
@@ -300,6 +303,26 @@ class Handler(SimpleHTTPRequestHandler):
         except service.Pick as p:
             return self._json(400, {"error": "several charts in this repo: set `path`", "charts": p.charts})
         except (gitsrc.GitError, AnalysisError, ValueError) as e:
+            return self._json(400, {"error": str(e)})
+        except Exception as e:
+            return self._json(500, {"error": f"unexpected error: {e}"})
+
+    def _fixplan(self):
+        """Fix planner: preview selected fixes on the rendered chart + build the Claude prompt."""
+        n = int(self.headers.get("Content-Length") or 0)
+        if n <= 0 or n > MAX_UPLOAD + 5 * 1024 * 1024:
+            return self._json(413, {"error": "plan request too large"})
+        try:
+            b = json.loads(self.rfile.read(n))
+            files = {str(k): str(v) for k, v in (b.get("files") or {}).items() if isinstance(v, str)}
+            rule_ids = [str(x) for x in (b.get("rules") or [])][:80]
+            if not rule_ids:
+                return self._json(400, {"error": "pick at least one rule"})
+            out = fixes.plan(files, str(b.get("rendered") or ""), rule_ids, str(b.get("release") or "demo")[:53],
+                             str(b.get("namespace") or "default")[:63], b.get("kubeTarget"), b.get("source"))
+            metrics.inc("helmviz_fixplans_total", rules=str(len(rule_ids)))
+            return self._json(200, out)
+        except (AnalysisError, ValueError) as e:
             return self._json(400, {"error": str(e)})
         except Exception as e:
             return self._json(500, {"error": f"unexpected error: {e}"})

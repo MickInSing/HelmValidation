@@ -13,7 +13,7 @@ import gitsrc
 import metrics
 from analyzer import AnalysisError, analyse_chart_dir
 
-APP_VERSION = "10"
+APP_VERSION = "13"
 BUILD = dict(version=APP_VERSION, gitSha=os.environ.get("GIT_SHA", "dev")[:12], buildDate=os.environ.get("BUILD_DATE", ""))
 GRAFANA_URL = os.environ.get("GRAFANA_URL", "")
 SCHEDULER = os.environ.get("SCHEDULER", "on") != "off"

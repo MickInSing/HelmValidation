@@ -228,8 +228,11 @@ function load(data) {
   $("#btn-home").classList.remove("hidden"); $("#btn-back").classList.add("hidden"); document.body.classList.remove("at-home");
   const c = D.chart;
   $("#crumb").innerHTML = `${esc(c.name)} <span>/</span> v${esc(c.version)} <span>/</span> release <b>${esc(D.release)}</b> in <b>${esc(D.namespace)}</b>`;
-  Z.keep = false;
+  Z.keep = false; podsFixed = false; podSel = null;
+  document.querySelectorAll("#imode .pf").forEach((b) => b.classList.toggle("on", b.dataset.pf === "current"));
+  $("#pf-score") && $("#pf-score").classList.add("hidden");
   renderSide(); renderScore(); buildGraph(); go(curBy[view]);
+  if (view === "infra" && infraMode === "pods") podsIntro();
   renderDrawer();
   afterLoadSource();
   gitButtons();
@@ -315,6 +318,16 @@ function renderSide() {
   $("#steps").innerHTML = html;
   $("#steps").querySelectorAll(".step").forEach((b) => (b.onclick = () => go(+b.dataset.i)));
 }
+// hardening score → fixes
+function openFixPlanner() {
+  showHome("rules");
+  let n = 0; const t = setInterval(() => { const p = $("#planner"); if ((p && p.querySelector("#pl-rules")) || ++n > 40) { clearInterval(t); if (p) { p.scrollIntoView({ behavior: "smooth", block: "start" }); p.classList.remove("flash"); void p.offsetWidth; p.classList.add("flash"); } } }, 100);
+}
+async function showFixesOnPods() {
+  setView("infra");
+  if (infraMode !== "pods") setInfraMode("pods");
+  setTimeout(() => setPodsFixed(true), 60);
+}
 function renderScore() {
   if (D.renderError && !D.resources.length) {
     $("#scorebox").innerHTML = `<div><div class="lbl">Hardening score</div><div class="val">Not rendered yet</div><div class="lbl">Supply values to check the chart</div></div>`;
@@ -327,12 +340,21 @@ function renderScore() {
     <circle cx="28" cy="28" r="22" fill="none" stroke="${col}" stroke-width="6" stroke-linecap="round" stroke-dasharray="${(C * s) / 100} ${C}" transform="rotate(-90 28 28)"/>
     <text x="28" y="33" text-anchor="middle" fill="#fff" font-size="15" font-weight="700">${s}</text></svg>
     <div><div class="lbl">Hardening score</div><div class="val">${D.findings.filter((f) => !f.accepted).length} findings${D.accepted ? ` <span class="muted" style="font-size:11px">+${D.accepted} accepted</span>` : ""}</div>
-    <div class="sevrow">${Object.keys(SEV_ORDER).filter((k) => counts[k]).map((k) => `<span class="pill ${k}">${counts[k]} ${k}</span>`).join("")}</div></div>`;
+    <div class="sevrow">${Object.keys(SEV_ORDER).filter((k) => counts[k]).map((k) => `<span class="pill ${k}">${counts[k]} ${k}</span>`).join("")}</div>
+    ${D.findings.some((f) => !f.accepted) ? `<div class="sb-acts"><button id="sb-plan" title="Pick fixes, preview the impact, get a Claude prompt">Fix planner →</button><button id="sb-pods" title="Show the previewed fixes on the Pods diagram">Show fixes on Pods</button></div>` : ""}</div>`;
   $("#scorebox").classList.remove("hidden");
+  $("#scorebox").classList.add("click");
+  $("#scorebox .ring").onclick = openFixPlanner;
+  if ($("#sb-plan")) { $("#sb-plan").onclick = openFixPlanner; $("#sb-pods").onclick = showFixesOnPods; }
 }
 
 // ---------------------------------------------------------------- graph
 function buildGraph() {
+  const pods = view === "infra" && infraMode === "pods";
+  $("#imode").classList.toggle("hidden", view !== "infra");
+  $("#podsview").classList.toggle("hidden", !pods);
+  $("#graph").classList.toggle("hidden", pods);
+  if (pods) return buildPods();
   if (view === "helm") return buildPipeline();
   if (view === "infra") return buildInfra();
   const svg = $("#graph"), W = svg.clientWidth || 900, H = svg.clientHeight || 360;
@@ -438,6 +460,31 @@ function tip(e, id) {
     : `<b>${esc(r.kind)}</b> ${esc(r.name)}<br><span class="muted">${esc(r.source)} · ${r.findings.length} findings</span>`;
   t.style.left = e.clientX + 14 + "px"; t.style.top = e.clientY + 14 + "px"; t.classList.remove("hidden");
 }
+// adjustable frames: diagram ↕ lower panels, explanation ↔ code
+(() => {
+  const work = $("#work"), lower = $(".lower"), K = "helmviz.split", canStore = /^https?:$/.test(location.protocol);
+  const save = () => { if (canStore) try { localStorage.setItem(K, JSON.stringify({ h: work.style.getPropertyValue("--stage-h"), w: lower.style.getPropertyValue("--explain-w") })); } catch {} };
+  if (canStore) try { const v = JSON.parse(localStorage.getItem(K) || "{}"); if (v.h) work.style.setProperty("--stage-h", v.h); if (v.w) lower.style.setProperty("--explain-w", v.w); } catch {}
+  const drag = (handle, onMove) => {
+    let on = false;
+    handle.addEventListener("pointerdown", (e) => { on = true; handle.setPointerCapture(e.pointerId); document.body.classList.add("resizing"); e.preventDefault(); });
+    handle.addEventListener("pointermove", (e) => on && onMove(e));
+    handle.addEventListener("pointerup", () => { if (!on) return; on = false; document.body.classList.remove("resizing"); save(); Z.keep = false; D && buildGraph(); });
+  };
+  drag($("#hsplit"), (e) => {
+    const r = work.getBoundingClientRect(), y = Math.max(160, Math.min(r.height - 160, e.clientY - r.top));
+    work.style.setProperty("--stage-h", Math.round(y) + "px");
+    if (view === "infra" && infraMode === "pods") requestAnimationFrame(podWires);
+  });
+  drag($("#vsplit"), (e) => {
+    const r = lower.getBoundingClientRect(), x = Math.max(240, Math.min(r.width - 280, e.clientX - r.left));
+    lower.style.setProperty("--explain-w", Math.round(x) + "px");
+  });
+  $("#hsplit").ondblclick = () => { work.style.removeProperty("--stage-h"); save(); Z.keep = false; D && buildGraph(); };
+  $("#vsplit").ondblclick = () => { lower.style.removeProperty("--explain-w"); save(); };
+  // the ⇕ button goes back to the preset sizes
+  $("#z-big").addEventListener("click", () => { work.style.removeProperty("--stage-h"); save(); }, true);
+})();
 let rz; window.addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(() => D && buildGraph(), 120); });
 
 // ---------------------------------------------------------------- views (Chart / Helm concepts / Infrastructure)
@@ -881,13 +928,13 @@ $("#kube").onchange = () => { $("#dr-kube").value = $("#kube").value; };
 let homeTab = "scan";
 function setHome(t, opts = {}) {
   homeTab = t;
-  document.querySelectorAll(".hometabs button").forEach((b) => b.classList.toggle("on", b.dataset.home === t));
+  document.querySelectorAll(".hometabs button[data-home]").forEach((b) => b.classList.toggle("on", b.dataset.home === t));
   ["scan", "rules", "history", "watch"].forEach((x) => $("#hp-" + x).classList.toggle("hidden", x !== t));
   if (t === "rules") renderRules(opts.rule);
   if (t === "history") renderHistory();
   if (t === "watch") renderWatch();
 }
-document.querySelectorAll(".hometabs button").forEach((b) => (b.onclick = () => setHome(b.dataset.home)));
+document.querySelectorAll(".hometabs button[data-home]").forEach((b) => (b.onclick = () => setHome(b.dataset.home)));
 function goHome(t) { showHome(t); }
 
 // ---- Best practices (rules catalog)
@@ -940,17 +987,22 @@ async function renderRules(focus) {
   const live = CAT.live || {};
   const rate = (id) => (st && st.failRate && st.totals.scans ? st.failRate[id] ?? 0
     : live.scans ? Math.round((100 * (live.ruleScans[id] || 0)) / live.scans) : undefined);
-  el.innerHTML = head + `<table class="rtbl"><thead><tr><th>Rule</th><th>Severity</th><th>Check</th><th title="Share of scans in which this rule failed">Fails in</th><th>Updated</th></tr></thead><tbody>` +
+  const keep = $("#planner"), chartKey = D ? D.chart.name + "@" + (D.chart.version || "") + "@" + (D.scanId || D.score) : "";
+  const here = {};
+  if (D) D.findings.forEach((f) => { if (f.rule && !f.accepted) here[f.rule] = (here[f.rule] || 0) + 1; });
+  el.innerHTML = head.replace('<div class="filters">', '<div id="planner" class="planner"></div><div class="filters">') + `<table class="rtbl"><thead><tr><th>Rule</th><th>Severity</th><th>Check</th><th title="Share of scans in which this rule failed">Fails in</th><th>Updated</th></tr></thead><tbody>` +
     rows.map((r) => `<tr id="rule-${esc(r.id)}" class="${r.id === focus ? "hl" : ""}">
       <td><div class="rid">${esc(r.id)}</div><span class="cat ${esc(r.category)}">${esc(r.category)}</span>${r.domain ? `<div class="muted" style="font-size:11px;margin-top:4px">${esc(r.domain)}</div>` : ""}</td>
       <td><span class="pill ${esc(r.severity)}">${esc(r.severity)}</span></td>
       <td><b>${esc(r.title)}</b><div class="why">${esc(r.why)}</div><div class="fixc">${esc(r.fix)}</div>
         <div class="refs">${r.refs.map((x) => `<a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">${esc(x.title)} ↗</a>`).join("")}</div></td>
-      <td class="rate">${rate(r.id) === undefined ? '<span class="muted">–</span>' : `${rate(r.id)}% of scans${rate(r.id) ? `<i style="width:${Math.max(3, rate(r.id) * 0.8)}px"></i>` : ""}`}</td>
+      <td class="rate">${rate(r.id) === undefined ? '<span class="muted">–</span>' : `${rate(r.id)}% of scans${rate(r.id) ? `<i style="width:${Math.max(3, rate(r.id) * 0.8)}px"></i>` : ""}`}
+        ${here[r.id] ? `<div class="herechip" title="Fails in ${esc(D.chart.name)}">${esc(D.chart.name)} ×${here[r.id]}</div>` : ""}</td>
       <td class="muted" style="white-space:nowrap">${esc(r.updated)}</td></tr>`).join("") + `</tbody></table>` +
     (rows.length ? "" : `<div class="empty">No rules match.</div>`);
   el.querySelectorAll(".filters button").forEach((b) => (b.onclick = () => { catFilter = b.dataset.c; renderRules(); }));
   const q = $("#rq"); q.oninput = () => { catQuery = q.value; const pos = q.selectionStart; renderRules(); const n = $("#rq"); n.focus(); n.setSelectionRange(pos, pos); };
+  if (keep && keep.dataset.chart === chartKey) $("#planner").replaceWith(keep); else { $("#planner").dataset.chart = chartKey; renderPlanner(); }
   if (focus) setTimeout(() => $("#rule-" + CSS.escape(focus))?.scrollIntoView({ block: "center" }), 50);
 }
 
@@ -1078,8 +1130,12 @@ function zoomAt(f, cx, cy, animate) {
   const k2 = Math.min(3, Math.max(0.15, Z.k * f));
   Z.x = cx - (cx - Z.x) * (k2 / Z.k); Z.y = cy - (cy - Z.y) * (k2 / Z.k); Z.k = k2; Z.keep = true; applyZ(animate);
 }
-function zoomCenter(f) { const s = $("#graph"); zoomAt(f, s.clientWidth / 2, s.clientHeight / 2, true); }
-function zoomFit() { Z.keep = false; const s = $("#graph"); Z.k = Z.fit; Z.x = (s.clientWidth - Z.W * Z.k) / 2; Z.y = (s.clientHeight - Z.H * Z.k) / 2; applyZ(true); }
+function zoomCenter(f) {
+  if (view === "infra" && infraMode === "pods") { pvZoom = Math.min(2, Math.max(0.4, pvZoom * f)); $("#pv-inner").style.zoom = pvZoom; $("#z-lvl").textContent = Math.round(pvZoom * 100) + "%"; requestAnimationFrame(podWires); return; }
+  const s = $("#graph"); zoomAt(f, s.clientWidth / 2, s.clientHeight / 2, true); }
+function zoomFit() {
+  if (view === "infra" && infraMode === "pods") { const v = $("#podsview"), i = $("#pv-inner"); i.style.zoom = 1; pvZoom = Math.min(1, v.clientWidth / (i.scrollWidth + 20)); i.style.zoom = pvZoom; $("#z-lvl").textContent = Math.round(pvZoom * 100) + "%"; requestAnimationFrame(podWires); return; }
+  Z.keep = false; const s = $("#graph"); Z.k = Z.fit; Z.x = (s.clientWidth - Z.W * Z.k) / 2; Z.y = (s.clientHeight - Z.H * Z.k) / 2; applyZ(true); }
 function zoomFollow(p) {  // keep the active node in view when zoomed in
   if (!p || Z.k <= Z.fit * 1.1) return;
   const s = $("#graph"), sx = Z.x + p.x * Z.k, sy = Z.y + p.y * Z.k, m = 80;
@@ -1114,6 +1170,469 @@ function zoomFollow(p) {  // keep the active node in view when zoomed in
 // deep links to the home tabs: /?home=rules&rule=CKS-POD-002
 (() => { const q = new URLSearchParams(location.search); if (q.get("home")) setHome(q.get("home"), { rule: q.get("rule") }); })();
 api("/api/rules").then((c) => { CAT = c; RULES = Object.fromEntries(c.rules.map((r) => [r.id, r])); }).catch(() => {});
+
+// ================================================================ v11: fix planner (Best practices tab)
+let PL = { sel: null, result: null, pane: 0, choices: [] };
+const SEVR = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+async function plannerChoices() {
+  const out = [];
+  if (D) out.push({ key: "current", label: `Current: ${D.chart.name} ${D.chart.version || ""}${D.source && D.source.repo ? " · " + D.source.repo + (D.source.path ? "/" + D.source.path : "") : ""}` });
+  const seen = new Set(D && D.source && D.source.type === "git" ? [`${D.source.repo}|${D.source.path || ""}`] : []);
+  const add = (url, ref, path, label) => { const k = `${url.replace(/^https:\/\//, "")}|${path || ""}`; if (seen.has(k)) return; seen.add(k); out.push({ key: "git:" + out.length, url, ref, path, label }); };
+  if (INFO?.db?.enabled) {
+    try { (await api("/api/repos")).forEach((r) => add(r.url, r.ref, r.path, `Watched: ${r.url.replace(/^https:\/\//, "")}${r.path ? "/" + r.path : ""}`)); } catch {}
+    try { (await api("/api/history?limit=100")).filter((r) => r.source_type === "git").forEach((r) =>
+      add("https://" + r.repo, r.ref && r.ref !== "default branch" ? r.ref : "", r.chart_path || "", `History: ${r.repo}${r.chart_path ? "/" + r.chart_path : ""}`)); } catch {}
+  }
+  return out;
+}
+async function renderPlanner() {
+  const el = $("#planner"); if (!el) return;
+  PL.choices = await plannerChoices();
+  const opts = PL.choices.map((c) => `<option value="${esc(c.key)}" ${c.key === "current" ? "selected" : ""}>${esc(c.label)}</option>`).join("");
+  el.innerHTML = `<div class="pl-head"><h3>Fix planner</h3><span class="muted">Pick a chart and the fixes to try. Preview the impact on the rendered chart, then hand the change to Claude.</span></div>
+    <div class="formrow"><select id="pl-chart" class="wide">${opts || '<option value="">No chart loaded: scan one first (or watch / scan a Git repo)</option>'}</select>
+      <button id="pl-load" class="ghost">${PL.choices.length ? "Load" : "Scan a chart"}</button></div>
+    <div id="pl-rules"></div><div id="pl-out"></div>`;
+  $("#pl-load").onclick = async () => {
+    const c = PL.choices.find((x) => x.key === $("#pl-chart").value);
+    if (!c) return showHome("scan");
+    if (c.key === "current") return renderPlannerRules();
+    $("#pl-rules").innerHTML = `<div class="status">Fetching ${esc(c.label)}…</div>`;
+    try {
+      const j = await api(`/api/git?url=${encodeURIComponent(c.url)}&ref=${encodeURIComponent(c.ref || "")}&path=${encodeURIComponent(c.path || "")}`, { headers: hdrs() });
+      if (j.pick) throw new Error("Several charts in that repo: open it from Scan a chart and pick one.");
+      src = { kind: "git", url: c.url, ref: c.ref, path: c.path }; load(j); showHome("rules");
+    } catch (e) { $("#pl-rules").innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+  };
+  $("#pl-chart").onchange = () => { if ($("#pl-chart").value === "current") renderPlannerRules(); else { $("#pl-rules").innerHTML = `<div class="muted hint">Press Load to scan this chart.</div>`; $("#pl-out").innerHTML = ""; } };
+  if (D) renderPlannerRules();
+}
+function renderPlannerRules() {
+  const el = $("#pl-rules"); if (!el || !D) return;
+  const fx = (CAT && CAT.fixability) || {};
+  const by = {};
+  D.findings.filter((f) => f.rule && !f.accepted).forEach((f) => { (by[f.rule] ||= { rule: f.rule, sev: f.sev, n: 0 }).n++; if (SEVR[f.sev] < SEVR[by[f.rule].sev]) by[f.rule].sev = f.sev; });
+  const list = Object.values(by).sort((a, b) => SEVR[a.sev] - SEVR[b.sev] || a.rule.localeCompare(b.rule));
+  if (!list.length) { el.innerHTML = `<div class="ok">✓ ${esc(D.chart.name)} has no open findings. Nothing to fix.</div>`; return; }
+  if (!PL.sel || PL.sel.chart !== D.chart.name + D.chart.version) {
+    PL.sel = { chart: D.chart.name + D.chart.version, ids: new Set(list.filter((r) => (r.sev === "critical" || r.sev === "high") && fx[r.rule] === "preview").map((r) => r.rule)) };
+  }
+  // severity toggles: which severities are in play (off = hidden and not fixed)
+  const sevs = Object.keys(SEV_ORDER).filter((k) => list.some((r) => r.sev === k));
+  const hc = sevs.filter((k) => k === "critical" || k === "high");
+  if (!PL.sel.sev) PL.sel.sev = new Set(hc.length ? hc : sevs);
+  const shown = list.filter((r) => PL.sel.sev.has(r.sev));
+  const cats = {}; shown.forEach((r) => (cats[RULES[r.rule]?.category || "Other"] ||= []).push(r));
+  const sevBar = `<div class="pl-sev"><span class="muted">Severity</span>${sevs.map((k) => {
+      const rs = list.filter((r) => r.sev === k), on = PL.sel.sev.has(k), picked = rs.filter((r) => PL.sel.ids.has(r.rule)).length;
+      return `<button class="sevt ${k} ${on ? "on" : ""}" data-sev="${k}" title="${on ? "Hide and skip" : "Show and select"} ${k} rules">${on ? "✓ " : ""}${k} <b>${rs.length}</b>${on && picked < rs.length ? `<i>${picked} picked</i>` : ""}</button>`;
+    }).join("")}</div>`;
+  el.innerHTML = sevBar + `<div class="pl-tools"><span class="muted">${list.length} failing rules in <b>${esc(D.chart.name)}</b> (score ${D.score}).</span>
+      <button class="mini" data-s="hc">High + critical</button><button class="mini" data-s="prev">All previewable</button><button class="mini" data-s="all">All</button><button class="mini" data-s="none">Clear</button></div>
+    <div class="pl-grid">${shown.length ? "" : '<div class="muted">All severities are switched off.</div>'}${Object.entries(cats).map(([cat, rs]) => `<div class="pl-col"><div class="xh"><span class="cat ${esc(cat)}">${esc(cat)}</span></div>` + rs.map((r) => `
+      <label class="pl-rule"><input type="checkbox" value="${esc(r.rule)}" ${PL.sel.ids.has(r.rule) ? "checked" : ""}>
+        <span class="pill ${r.sev}">${r.sev}</span><span class="rid">${esc(r.rule)}</span>
+        <span class="t">${esc(RULES[r.rule]?.title || "")}</span><span class="muted">×${r.n}</span>
+        <span class="fxb ${fx[r.rule] === "preview" ? "auto" : ""}" title="${fx[r.rule] === "preview" ? "Can be previewed on the rendered chart" : "Needs a template change; included in the Claude prompt"}">${fx[r.rule] === "preview" ? "preview" : "prompt only"}</span></label>`).join("") + `</div>`).join("")}</div>
+    <div class="row left"><button id="pl-go" class="primary">Preview impact of ${PL.sel.ids.size} fix${PL.sel.ids.size === 1 ? "" : "es"}</button></div>`;
+  const upd = () => { $("#pl-go").textContent = `Preview impact of ${PL.sel.ids.size} fix${PL.sel.ids.size === 1 ? "" : "es"}`; };
+  el.querySelectorAll(".pl-rule input").forEach((c) => (c.onchange = () => { c.checked ? PL.sel.ids.add(c.value) : PL.sel.ids.delete(c.value); upd(); }));
+  el.querySelectorAll("[data-s]").forEach((b) => (b.onclick = () => {
+    const m = b.dataset.s;
+    if (m === "all" || m === "prev") PL.sel.sev = new Set(sevs); else if (m === "hc") PL.sel.sev = new Set(hc.length ? hc : sevs);
+    PL.sel.ids = new Set(list.filter((r) => PL.sel.sev.has(r.sev)).filter((r) => m === "all" || (m === "prev" && fx[r.rule] === "preview") || (m === "hc" && (r.sev === "critical" || r.sev === "high") && fx[r.rule] === "preview")).map((r) => r.rule));
+    renderPlannerRules();
+  }));
+  el.querySelectorAll("[data-sev]").forEach((b) => (b.onclick = () => {
+    const k = b.dataset.sev, rs = list.filter((r) => r.sev === k);
+    if (PL.sel.sev.has(k)) { PL.sel.sev.delete(k); rs.forEach((r) => PL.sel.ids.delete(r.rule)); }
+    else { PL.sel.sev.add(k); rs.forEach((r) => PL.sel.ids.add(r.rule)); }
+    renderPlannerRules();
+  }));
+  $("#pl-go").onclick = runPlan;
+}
+async function runPlan() {
+  const out = $("#pl-out");
+  if (!PL.sel.ids.size) { out.innerHTML = `<div class="err">Pick at least one rule.</div>`; return; }
+  out.innerHTML = `<div class="status">Applying ${PL.sel.ids.size} fixes to a copy, re-rendering and re-checking…</div>`;
+  try {
+    const files = Object.fromEntries(Object.entries(D.files).filter(([k]) => !k.startsWith("(")));
+    PL.result = await post("/api/fixplan", { files, rendered: D.rendered, rules: [...PL.sel.ids], release: D.release, namespace: D.namespace, kubeTarget: D.kubeTarget, source: D.source });
+    PL.pane = 0; renderPlanResult();
+    out.scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (e) { out.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+}
+function renderPlanResult() {
+  const p = PL.result, out = $("#pl-out");
+  const sevs = (c) => ["critical", "high", "medium", "low"].filter((s) => c[s]).map((s) => `<span class="pill ${s}">${c[s]} ${s}</span>`).join(" ") || '<span class="muted">none</span>';
+  const applied = p.changes.filter((c) => c.applied), manual = p.changes.filter((c) => !c.applied);
+  const byRes = {}; applied.forEach((c) => (byRes[c.resource] ||= []).push(c));
+  const pane = p.panes[PL.pane];
+  out.innerHTML = `<div class="pl-result">
+    <div class="cmp-score"><div><div class="muted">current</div><div class="big ${scoreCls(p.before.score)}">${p.before.score}</div><div>${sevs(p.before.counts)}</div></div>
+      <div class="big ${p.scoreDelta > 0 ? "delta-up" : p.scoreDelta < 0 ? "delta-down" : ""}">${p.scoreDelta > 0 ? "▲ +" : p.scoreDelta < 0 ? "▼ " : "= "}${p.scoreDelta}</div>
+      <div><div class="muted">with fixes</div><div class="big ${scoreCls(p.after.score)}">${p.after.score}</div><div>${sevs(p.after.counts)}</div></div>
+      <div class="muted" style="font-size:12.5px;line-height:1.6">${p.fixed.length} findings fixed<br>${p.introduced.length ? `<span class="expd">${p.introduced.length} introduced</span>` : "0 introduced"}<br>${manual.length} left for the prompt</div></div>
+    ${p.introduced.length ? `<div class="err" style="margin-bottom:10px">The preview introduced: ${p.introduced.map((f) => esc(f.rule + " " + f.title)).join("; ")}</div>` : ""}
+    <div class="pl-cols">
+      <div><h3 class="xh">Previewed changes and their risks</h3>${Object.entries(byRes).map(([res, cs]) => `<div class="pl-change"><b>${esc(res)}</b>${cs.map((c) => `
+        <div class="pl-c"><span class="rid">${esc(c.rule)}</span> ${esc(c.summary)}${c.risk ? `<div class="pl-risk">⚠ ${esc(c.risk)}</div>` : ""}</div>`).join("")}</div>`).join("") || '<div class="muted">None of the selected rules can be previewed automatically.</div>'}
+        ${manual.length ? `<h3 class="xh">Needs a template change (in the prompt)</h3>` + manual.map((c) => `<div class="pl-c"><span class="rid">${esc(c.rule)}</span> ${esc(c.resource)}: ${esc(c.summary)}</div>`).join("") : ""}</div>
+      <div><h3 class="xh">Rendered chart: current vs with fixes</h3>
+        ${p.panes.length ? `<div class="pl-tabs">${p.panes.map((x, i) => `<button class="tab ${i === PL.pane ? "on" : ""}" data-i="${i}">${esc(x.resource)}${x.status === "added" ? " <i>new</i>" : ""}</button>`).join("")}</div>
+        <div class="sbs"><div class="sbs-h"><span>Current</span><span>With fixes</span></div>${pane.rows.map((r) => r.t === "skip"
+          ? `<div class="sbs-r skip"><span>${esc(r.l)}</span></div>`
+          : `<div class="sbs-r ${r.t}"><span class="no">${r.ln ?? ""}</span><span class="c">${hl(r.l) || " "}</span><span class="no">${r.rn ?? ""}</span><span class="c">${hl(r.r) || " "}</span></div>`).join("")}</div>`
+        : '<div class="muted">No rendered changes.</div>'}</div></div>
+    <h3 class="xh">Step 3: make the real change with Claude</h3>
+    <p class="muted" style="font-size:12.5px">The preview patched the rendered output. This prompt asks Claude to make the same change in the chart's templates and values (secure defaults, backwards compatible), handle each risk, add exceptions for anything left, and bump the chart version <b>${esc(p.bump.current)} → ${esc(p.bump[p.bump.recommended])}</b>. Secret-looking values are redacted.</p>
+    <textarea id="pl-prompt" class="pl-prompt" readonly>${esc(p.prompt)}</textarea>
+    <div class="row left"><button id="pl-copy" class="primary">Copy prompt</button><button id="pl-dl" class="ghost">Download .md</button></div>
+    <h3 class="xh">Step 4: branch, commit, pull request</h3>
+    <pre class="pl-git" id="pl-git">${esc(p.git.commands)}</pre>
+    <div class="row left"><button id="pl-copygit" class="ghost">Copy commands</button></div></div>`;
+  out.querySelectorAll(".pl-tabs .tab").forEach((b) => (b.onclick = () => { PL.pane = +b.dataset.i; renderPlanResult(); }));
+  const copy = async (text, btn, label) => { try { await navigator.clipboard.writeText(text); btn.textContent = "Copied ✓"; } catch { window.prompt("Copy:", text); } setTimeout(() => (btn.textContent = label), 1600); };
+  $("#pl-copy").onclick = () => copy(p.prompt, $("#pl-copy"), "Copy prompt");
+  $("#pl-copygit").onclick = () => copy(p.git.commands, $("#pl-copygit"), "Copy commands");
+  $("#pl-dl").onclick = () => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([p.prompt], { type: "text/markdown" }));
+    a.download = `${p.chart.name || "chart"}-fix-prompt.md`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); };
+}
+
+
+// ================================================================ v12: Pods view (Infrastructure → Pods)
+let infraMode = "arch", podsFixed = false, pvZoom = 1, podSel = null, bigBefore = false;
+const BRAND = { kubernetes: ["#326CE5", "K8s"], helm: ["#277A9F", "H"], prometheus: ["#E6522C", "P"], grafana: ["#F46800", "G"],
+  postgresql: ["#4169E1", "Pg"], redis: ["#FF4438", "R"], nginx: ["#009639", "N"], argo: ["#EF7B4D", "A"] };
+const LOGO_OK = {};
+Object.keys(BRAND).forEach((slug) => { const i = new Image(); i.onload = () => { LOGO_OK[slug] = 1; }; i.src = `logos/${slug}.svg`; });
+function lg(slug, size = 15, fallback) {
+  if (!slug) return fallback ? `<span class="lg" data-f="${esc(fallback)}" style="--s:${size}px"></span>` : "";
+  const b = BRAND[slug] || ["#555", "?"];
+  return `<span class="lg ${LOGO_OK[slug] ? "ok" : ""}" data-f="${b[1]}" title="${esc(slug)}" style="--s:${size}px;--c:${b[0]};--u:url('logos/${slug}.svg')"></span>`;
+}
+function setInfraMode(m) {
+  infraMode = m;
+  document.querySelectorAll("#imode [data-im]").forEach((b) => b.classList.toggle("on", b.dataset.im === m));
+  document.querySelectorAll("#imode .pf").forEach((b) => b.classList.toggle("hidden", m !== "pods"));
+  $("#pf-score").classList.toggle("hidden", m !== "pods" || !podsFixed);
+  const work = $(".work");
+  if (m === "pods") { bigBefore = work.classList.contains("big"); work.classList.add("big"); }
+  else if (!bigBefore) work.classList.remove("big");
+  setTimeout(() => { buildGraph(); if (m === "pods") podsIntro(); else go(curBy[view]); }, 30);
+}
+document.querySelectorAll("#imode [data-im]").forEach((b) => (b.onclick = () => setInfraMode(b.dataset.im)));
+document.querySelectorAll("#imode .pf").forEach((b) => (b.onclick = () => setPodsFixed(b.dataset.pf === "fixed")));
+// Pods view: drag to pan and wheel to zoom, matching the other diagrams
+(() => {
+  const v = $("#podsview"); let start = null, dragged = false;
+  v.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || e.target.closest("button,a,input,select,textarea,.pv-details")) return;
+    start = { x: e.clientX, y: e.clientY, sl: v.scrollLeft, st: v.scrollTop }; dragged = false;
+  });
+  window.addEventListener("pointermove", (e) => {
+    if (!start) return;
+    const dx = e.clientX - start.x, dy = e.clientY - start.y;
+    if (!dragged && Math.hypot(dx, dy) < 4) return;
+    dragged = true; v.classList.add("panning"); e.preventDefault();
+    v.scrollLeft = start.sl - dx; v.scrollTop = start.st - dy;
+  });
+  window.addEventListener("pointerup", () => { if (!start) return; start = null; v.classList.remove("panning"); setTimeout(() => (dragged = false), 0); });
+  v.addEventListener("click", (e) => { if (dragged) { e.stopPropagation(); e.preventDefault(); } }, true);
+  v.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const i = $("#pv-inner"), r = v.getBoundingClientRect(), cs = getComputedStyle(v);
+    const mx = e.clientX - r.left, my = e.clientY - r.top, pl = parseFloat(cs.paddingLeft), pt = parseFloat(cs.paddingTop);
+    const px = (v.scrollLeft + mx - pl) / pvZoom, py = (v.scrollTop + my - pt) / pvZoom;
+    pvZoom = Math.min(2, Math.max(0.4, pvZoom * Math.exp(-e.deltaY * 0.0015)));
+    i.style.zoom = pvZoom; $("#z-lvl").textContent = Math.round(pvZoom * 100) + "%";
+    v.scrollLeft = px * pvZoom + pl - mx; v.scrollTop = py * pvZoom + pt - my;
+    requestAnimationFrame(podWires);
+  }, { passive: false });
+})();
+async function setPodsFixed(on) {
+  if (on && !(PL.result && PL.resultFor === chartKeyOf())) {
+    $("#pf-score").textContent = "previewing fixes…"; $("#pf-score").classList.remove("hidden");
+    const fx = (CAT && CAT.fixability) || {};
+    const ids = [...new Set(D.findings.filter((f) => f.rule && !f.accepted && fx[f.rule] === "preview").map((f) => f.rule))];
+    if (!ids.length) { $("#pf-score").textContent = "nothing previewable to fix"; return; }
+    try {
+      const files = Object.fromEntries(Object.entries(D.files).filter(([k]) => !k.startsWith("(")));
+      PL.result = await post("/api/fixplan", { files, rendered: D.rendered, rules: ids, release: D.release, namespace: D.namespace, kubeTarget: D.kubeTarget, source: D.source });
+      PL.resultFor = chartKeyOf(); PL.sel = { chart: D.chart.name + D.chart.version, ids: new Set(ids) };
+    } catch (e) { $("#pf-score").textContent = "preview failed: " + e.message; return; }
+  }
+  podsFixed = on;
+  document.querySelectorAll("#imode .pf").forEach((b) => b.classList.toggle("on", (b.dataset.pf === "fixed") === on));
+  $("#pf-score").innerHTML = on ? `score <b>${PL.result.before.score}</b> → <b class="sp-good">${PL.result.after.score}</b> · ${PL.sel.ids.size} fix types previewed` : "";
+  $("#pf-score").classList.toggle("hidden", !on);
+  buildGraph(); podsIntro();
+}
+const chartKeyOf = () => (D ? D.chart.name + "@" + (D.chart.version || "") + "@" + (D.scanId || D.score) : "");
+
+function fxFocus(res) {
+  const el = [...document.querySelectorAll("#pv-inner [data-res]")].find((x) => x.dataset.res === res) ||
+    [...document.querySelectorAll("#pv-inner .pnode")].find((x) => (x.textContent || "").includes(res.split("/")[1]));
+  if (el) { el.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" }); el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash"); }
+  const cs = (FX && FX.byRes[res]) || [];
+  $("#ex-kicker").textContent = "With fixes · " + res;
+  $("#ex-title").textContent = `${cs.length} fix${cs.length === 1 ? "" : "es"} on ${res}`;
+  $("#ex-body").innerHTML = cs.map((c) => `<div class="find low"><div class="hd"><span class="rid">${esc(c.rule)}</span><span>${esc(c.title)}</span></div>
+      <div class="small" style="margin-top:4px">${md(c.summary)}</div>${c.risk ? `<div class="small muted">Risk: ${esc(c.risk)}</div>` : ""}</div>`).join("");
+  $("#ex-extra").innerHTML = ""; $("#ex-ptrs").innerHTML = ""; $("#ex-find").innerHTML = "";
+}
+function podsIntro() {
+  if (view !== "infra" || infraMode !== "pods") return;
+  const T = topo();
+  $("#ex-kicker").textContent = "Infrastructure · Pods";
+  $("#ex-title").textContent = podsFixed ? "Pods with the previewed fixes" : "Pods the chart asks Kubernetes to run";
+  const n = T.workloads.reduce((a, w) => a + (w.daemon ? 1 : w.replicas.min), 0);
+  const M = T.managed || [], mp = M.reduce((a, m) => a + m.pods.length, 0);
+  $("#ex-body").innerHTML = md(`**${T.workloads.length}** workloads, **${n}** pods at minimum` +
+    (T.workloads.some((w) => w.hpa) ? " (autoscalers can add more, shown dashed)" : "") + ". " +
+    (M.length ? `\n\nPlus **${mp}** pod${mp === 1 ? "" : "s"} that ${[...new Set(M.map((m) => m.product))].join(" and ")} will create from the chart's custom resources (orange, dashed): they're not in the chart, so their spec is the operator's. ` +
+      M.flatMap((m) => m.connections.map((c) => CONN[c.status].txt(c, m))).join(" ") : "") + "\n\n" +
+    "This is what the rendered chart **requests**, not live cluster state: node placement, status and restarts aren't known." +
+    (podsFixed ? "\n\nShowing the fix planner's preview. Open **Home → Best practices → Fix planner** to change which fixes are applied, then generate the Claude prompt." : "") +
+    "\n\nClick a pod to inspect it.");
+  $("#ex-extra").innerHTML = FX ? `<div class="xh">Fixes in this preview</div>` + Object.entries(FX.byRes).map(([r, cs]) =>
+      `<button class="fx-row" data-r="${esc(r)}"><b>${esc(r)}</b>${cs.map((c) => `<div><span class="rid">${esc(c.rule)}</span> ${esc(c.title)}</div>`).join("")}</button>`).join("") +
+    (FX.manual.length ? `<div class="xh">Needs a manual change</div>` + FX.manual.map((c) => `<div class="small muted"><span class="rid">${esc(c.rule)}</span> ${esc(c.resource)}: ${esc(c.title)}</div>`).join("") : "") : "";
+  document.querySelectorAll("#ex-extra .fx-row").forEach((b) => (b.onclick = () => fxFocus(b.dataset.r)));
+  $("#ex-ptrs").innerHTML = ""; $("#ex-find").innerHTML = "";
+}
+const topo = () => (podsFixed && PL.result && PL.result.topologyAfter) || D.topology || { workloads: [], services: [], ingresses: [], config: [], netpols: [], outside: [], managed: [], ingressClasses: [] };
+
+function podNames(w) {
+  const hash = (i) => ["7f9c", "a2kq", "x8m4", "p3nd", "z5t0", "k1wr", "m6bv", "q0ce"][i % 8];
+  if (w.daemon) return [{ name: `${w.name}-<node>`, note: "one on every node" }];
+  if (w.kind === "CronJob" || w.kind === "Job") return [{ name: `${w.name}-<run>`, job: true }];
+  if (w.kind === "Pod") return [{ name: w.name }];
+  const out = [];
+  for (let i = 0; i < Math.min(w.replicas.max, w.replicas.min + 4); i++)
+    out.push({ name: w.kind === "StatefulSet" ? `${w.name}-${i}` : `${w.name}-${hash(i)}`, ghost: i >= w.replicas.min, zone: w.zoneSpread ? "abc"[i % 3] : null });
+  return out;
+}
+// "With fixes": what changed compared with the current chart, so the Pods view shows the fix in place
+let FX = null;
+function fixDiff() {
+  const B = D.topology || {}, A = topo(), k = (w) => w.kind + "/" + w.name, rng = (w) => (w.replicas.min === w.replicas.max ? String(w.replicas.min) : `${w.replicas.min}–${w.replicas.max}`);
+  const bw = Object.fromEntries((B.workloads || []).map((w) => [k(w), w]));
+  const out = { wl: {}, isNew: new Set(), byRes: {}, applied: (PL.result.changes || []).filter((c) => c.applied), manual: (PL.result.changes || []).filter((c) => !c.applied) };
+  out.applied.forEach((c) => (out.byRes[c.resource] = out.byRes[c.resource] || []).push(c));
+  A.workloads.forEach((w) => {
+    const b = bw[k(w)];
+    if (!b) { out.isNew.add(w.id); out.wl[w.id] = { d: ["new workload"], chips: {}, ctr: {}, minBefore: 0 }; return; }
+    const d = [], chips = {}, ctr = {};
+    if (rng(w) !== rng(b)) d.push(`replicas ${rng(b)} → ${rng(w)}`);
+    if (w.pdb && w.pdb !== b.pdb) { d.push(`PDB ${w.pdb}`); chips.pdb = 1; }
+    if (w.zoneSpread && !b.zoneSpread) { d.push("spread across zones"); chips.spread = 1; } else if (w.spread && !b.spread) { d.push("spread across nodes"); chips.spread = 1; }
+    if (w.netpols.some((n) => !b.netpols.includes(n))) { d.push("NetworkPolicy " + w.netpols.filter((n) => !b.netpols.includes(n)).join(", ")); chips.np = 1; }
+    if (b.sa.automount && !w.sa.automount) { d.push("API token no longer mounted"); chips.sa = 1; }
+    if (w.hostNetwork !== b.hostNetwork) d.push(w.hostNetwork ? "hostNetwork on" : "hostNetwork removed");
+    w.containers.forEach((c) => {
+      const bc = b.containers.find((x) => x.name === c.name) || { hardening: [], probes: [], resources: "" };
+      const h = c.hardening.filter((x) => !bc.hardening.includes(x)), pr = c.probes.filter((x) => !bc.probes.includes(x)), res = c.resources !== bc.resources;
+      if (h.length || pr.length || res) {
+        ctr[c.name] = { h: new Set(h), p: new Set(pr), res, resBefore: bc.resources };
+        d.push(`${c.name}: ` + [h.length ? h.join(", ") : "", pr.length ? "probes " + pr.join("/") : "", res ? "resources" : ""].filter(Boolean).join(" · "));
+      }
+    });
+    out.wl[w.id] = { d, chips, ctr, minBefore: b.replicas.min, rel: out.byRes[k(w)] || [] };
+  });
+  const had = (list, f) => new Set((list || []).map(f));
+  const bs = had(B.services, (x) => x.name), bc = had(B.config, (x) => x.kind + x.name), bn = had(B.netpols, (x) => x.name), bi = Object.fromEntries((B.ingresses || []).map((i) => [i.name, i]));
+  (A.services || []).forEach((x) => !bs.has(x.name) && out.isNew.add(x.id));
+  (A.config || []).forEach((x) => !bc.has(x.kind + x.name) && out.isNew.add(x.id));
+  (A.netpols || []).forEach((x) => !bn.has(x.name) && out.isNew.add("np:" + x.name));
+  (A.ingresses || []).forEach((x) => { if (!bi[x.name]) out.isNew.add(x.id); else if (x.tls && !bi[x.name].tls) out.isNew.add("tls:" + x.id); });
+  const bm = Object.fromEntries((B.managed || []).map((m) => [m.kind + m.name, m]));
+  (A.managed || []).forEach((m) => { const b = bm[m.kind + m.name]; out.wl[m.id] = { d: b && b.pods.length !== m.pods.length ? [`instances ${b.pods.length} → ${m.pods.length}`] : [], minBefore: b ? b.pods.length : 0, chips: {}, ctr: {} }; });
+  return out;
+}
+const nw = (on, html) => (on ? `<span class="nw">${html}</span>` : html);
+function fxBar() {
+  if (!FX) return "";
+  const res = Object.keys(FX.byRes);
+  return `<div class="fxbar"><div class="fx-h"><b>With fixes</b> · ${FX.applied.length} change${FX.applied.length === 1 ? "" : "s"} on ${res.length} resource${res.length === 1 ? "" : "s"} ·
+      score <b>${PL.result.before.score}</b> → <b class="sp-good">${PL.result.after.score}</b>${FX.manual.length ? ` · <span class="muted">${FX.manual.length} need a manual change</span>` : ""}
+      <span class="fx-key"><span class="nw">+ green</span> = added by the fix</span></div>
+    <div class="fx-list">${res.map((r) => `<button class="fx-chip" data-r="${esc(r)}">${esc(r)} <span>${FX.byRes[r].map((c) => esc(c.rule)).join(" ")}</span></button>`).join("")}</div></div>`;
+}
+function podCard(w, p, i) {
+  const sevN = (fs, hi) => fs.filter((f) => (hi ? ["critical", "high"].includes(f.sev) : f.sev === "medium")).length;
+  const fw = FX && FX.wl[w.id];
+  const ctr = w.containers.map((c) => {
+    const h = sevN(c.findings, true), m = sevN(c.findings, false), fc = fw && fw.ctr[c.name];
+    return `<div class="ctr ${c.side ? "side" : ""} ${c.init ? "init" : ""}"><div class="cn"><span>${lg(c.logo, 13)}${esc(c.name)}${c.side ? ' <i>sidecar</i>' : c.init ? ' <i>init</i>' : ""}</span>
+      <span>${h ? `<span class="bdg">${h}</span>` : ""}${m ? `<span class="bdg y">${m}</span>` : ""}${!h && !m ? '<span class="okm">✓</span>' : ""}</span></div>
+      <div class="ci">${esc(c.image || "")}</div>
+      <div class="cr">${c.ports.length ? ":" + esc(c.ports.join(", ")) + " · " : ""}${fc && fc.res ? `<span class="nw" title="was: ${esc(fc.resBefore)}">${esc(c.resources)}</span>` : esc(c.resources)}</div>
+      <div class="cr ${c.hardening.length >= 4 ? "hok" : c.hardening.length ? "" : "hbad"}">${c.hardening.length ? c.hardening.map((x) => nw(fc && fc.h.has(x), esc(x))).join(" · ") : "no securityContext hardening"}${c.probes.length ? " · probes: " + c.probes.map((x) => nw(fc && fc.p.has(x), esc(x))).join("/") : ""}</div></div>`;
+  }).join("");
+  const mounts = w.mounts.map((m) => `<span class="mt ${m.type}">${esc(m.label)}</span>`).join("") +
+    `<span class="mt sa ${w.sa.automount ? "warn" : ""} ${fw && fw.chips.sa ? "nwb" : ""}">SA ${esc(w.sa.name)}${w.sa.automount ? " (token mounted)" : fw && fw.chips.sa ? " (no token)" : ""}</span>` +
+    w.vct.map((v) => `<span class="mt persistentVolumeClaim">PVC ${esc(v.name)}-${esc(p.name)} ${esc(v.size)}</span>`).join("");
+  const added = fw && !p.ghost && !p.job && i >= fw.minBefore && !w.daemon;
+  return `<div class="pod ${p.ghost ? "ghost" : ""} ${p.job ? "job" : ""} ${added ? "added" : ""} ${podSel === w.id + ":" + i ? "sel" : ""}" data-w="${w.id}" data-i="${i}" ${p.zone ? `style="grid-column:${"abc".indexOf(p.zone) + 1}"` : ""}>
+    <div class="pn"><span>${lg(w.logo, 14)}${esc(p.name)}</span>${added ? '<span class="z nw">+ added</span>' : p.zone ? `<span class="z">zone ${p.zone}</span>` : p.note ? `<span class="z">${esc(p.note)}</span>` : ""}</div>${ctr}<div class="mounts">${mounts}</div></div>`;
+}
+const CONN = {
+  allowed: { cls: "ok", lbl: "allowed", txt: (c, m) => `**${wname(c.from)} → ${m.name}** on ${c.port}: allowed by its NetworkPolicy.` },
+  open: { cls: "open", lbl: "no egress policy", txt: (c, m) => `**${wname(c.from)} → ${m.name}** on ${c.port}: no egress policy, so nothing restricts it.` },
+  unknown: { cls: "unk", lbl: "check policy", txt: (c, m) => `**${wname(c.from)} → ${m.name}**: the egress policy uses ipBlock or label expressions, so check it by hand.` },
+  blocked: { cls: "bad", lbl: "blocked", txt: (c, m) => `⚠ **${wname(c.from)} → ${m.name}** on ${c.port}: **blocked**, the egress NetworkPolicy has no rule for these pods.` },
+};
+const wname = (id) => ((topo().workloads.find((w) => w.id === id) || {}).name || id);
+function managedCard(m) {
+  const fm = FX && FX.wl[m.id];
+  const pods = m.pods.map((p, i) => `<div class="pod ext ${fm && i >= fm.minBefore ? "added" : ""} ${podSel === "m:" + m.id + ":" + i ? "sel" : ""}" data-m="${m.id}" data-i="${i}">
+      <div class="pn"><span>${lg(m.logo, 14)}${esc(p.name)}</span><span class="z ${fm && i >= fm.minBefore ? "nw" : ""}">${fm && i >= fm.minBefore ? "+ " : ""}${esc(p.role)}</span></div>
+      <div class="ctr"><div class="ci">${esc(m.image)}</div><div class="cr">:${m.port}${m.storage ? " · PVC " + esc(m.storage) : ""}</div></div></div>`).join("");
+  const eps = m.services.map(([n, d]) => `<span class="mt svc" title="${esc(d)}">Service ${esc(n)}</span>`).join("") +
+    m.secrets.map(([n, d]) => `<span class="mt secret" title="${esc(d)}">Secret ${esc(n)}</span>`).join("");
+  return `<div class="wl mg ${fm && fm.d.length ? "changed" : ""}" id="pv-${m.id}" data-res="${esc(m.kind + "/" + m.name)}"><div class="wl-h"><span class="kind k-ext">${esc(m.kind)}</span><span class="name">${esc(m.name)}</span>
+      <span class="rep">${m.pods.length} instance${m.pods.length === 1 ? "" : "s"} · ${esc(m.what)}</span><span class="chipext">external · created by ${esc(m.product)}</span></div>
+    ${fm && fm.d.length ? `<div class="fx-what"><b>Fixed here:</b> ${fm.d.map(esc).join(" · ")}</div>` : ""}
+    <div class="pods">${pods}</div><div class="mounts">${eps}</div>
+    ${m.notes.length ? `<div class="wlf">${m.notes.map((n) => "⚠ " + esc(n)).join("<br>")}</div>` : ""}
+    ${m.connections.length ? "" : '<div class="wlf muted">No workload in the chart references its Secrets or Services.</div>'}</div>`;
+}
+function buildPods() {
+  const T = topo(), el = $("#pv-inner");
+  FX = podsFixed && PL.result ? fixDiff() : null;
+  const fenced = T.netpols.length > 0;
+  const noSpread = T.workloads.filter((w) => !w.spread && !w.daemon && w.replicas.max > 1);
+  const wl = T.workloads.map((w) => {
+    const pods = podNames(w);
+    const rep = w.daemon ? "DaemonSet · one pod per node" : w.schedule ? `schedule ${w.schedule}` : w.kind === "Job" ? "runs to completion"
+      : w.hpa ? `${w.hpa.min}–${w.hpa.max} replicas · HPA ${w.hpa.metric}` : `${w.replicas.min} replica${w.replicas.min === 1 ? "" : "s"}`;
+    const ghosts = w.replicas.max - Math.min(w.replicas.max, w.replicas.min + 4);
+    const fw = FX && FX.wl[w.id], ch = (fw && fw.chips) || {}, plus = (on) => (on ? " nwb" : "");
+    return `<div class="wl ${fw && fw.d.length ? "changed" : ""}" id="pv-${w.id}" data-res="${esc(w.kind + "/" + w.name)}"><div class="wl-h"><span class="kind k-${w.kind}">${esc(w.kind)}</span><span class="name">${esc(w.name)}</span>
+        <span class="rep">${esc(rep)}${w.hook ? " · hook " + esc(w.hook) : ""}</span>
+        ${w.pdb ? `<span class="chipok${plus(ch.pdb)}">PDB ${esc(w.pdb)}</span>` : ""}${w.netpols.length ? `<span class="chipnp${plus(ch.np)}">🛡 ${esc(w.netpols.join(", "))}</span>` : ""}
+        ${w.spread && !w.zoneSpread ? `<span class="chipok${plus(ch.spread)}">spread across nodes</span>` : ""}${w.zoneSpread && ch.spread ? '<span class="chipok nwb">spread across zones</span>' : ""}${w.hostNetwork ? '<span class="chipbad">hostNetwork</span>' : ""}</div>
+      ${fw && fw.d.length ? `<div class="fx-what"><b>Fixed here:</b> ${fw.d.map(esc).join(" · ")}${fw.rel && fw.rel.length ? ` <span class="rid">${[...new Set(fw.rel.map((c) => c.rule))].join(" ")}</span>` : ""}</div>` : ""}
+      ${w.zoneSpread ? '<div class="zones"><div>zone a</div><div>zone b</div><div>zone c</div></div>' : ""}
+      <div class="pods ${w.zoneSpread ? "zoned" : ""}">${pods.map((p, i) => podCard(w, p, i)).join("")}${ghosts > 0 ? `<div class="ghostnote">+${ghosts} more up to ${w.replicas.max}</div>` : ""}</div>
+      ${w.findings.length ? `<div class="wlf">${w.findings.slice(0, 4).map((f) => `<span class="pill ${f.sev}">${esc(f.rule || f.sev)}</span> ${esc(f.title)}`).join("<br>")}</div>` : ""}</div>`;
+  }).join("") || '<div class="muted">No workloads rendered.</div>';
+  const node = (id, k, n, s, cls = "", logo = "") => `<div class="pnode ${cls} ${FX && FX.isNew.has(id) ? "added" : ""}" id="pv-${id}">${FX && FX.isNew.has(id) ? '<span class="newtag">+ new</span>' : ""}<div class="k">${k}</div><div class="n">${logo}${n}</div>${s ? `<div class="s">${s}</div>` : ""}</div>`;
+  const edge = (T.ingresses.length ? node("users", "outside", "Users / Internet", "", "ext") : "") +
+    T.ingressClasses.map((c) => node(`ic-${c}`, "platform", `ingress controller`, `class: ${esc(c)}`, "ext", c.includes("nginx") || c === "default" ? lg("nginx", 16) : "")).join("") +
+    T.ingresses.map((i) => node(i.id, "Ingress", esc(i.name), esc(i.hosts.join(", ") || "*") + `<br>${i.tls ? `<span class="tag ok${FX && FX.isNew.has("tls:" + i.id) ? " nwb" : ""}">TLS</span>` : '<span class="tag warn">no TLS</span>'}`, "ing")).join("");
+  const svcs = T.services.map((s) => node(s.id, `Service · ${esc(s.type)}`, esc(s.name), esc(s.ports.join(", ")), "svc")).join("") || '<div class="muted small">no Services</div>';
+  const cfg = T.config.map((c) => node(c.id, esc(c.kind), esc(c.name), esc(c.keys.join(", ")) + (c.note ? ` <span class="tag info">${esc(c.note)}</span>` : ""), c.kind === "Secret" ? "sec" : c.kind.startsWith("PVC") || c.kind === "PersistentVolumeClaim" ? "pvc" : "cm")).join("") +
+    T.outside.map((x) => node(x.id, x.category === "operator" ? "platform · operator" : x.category === "values" ? "deploy-time values" : "must already exist", esc(x.label), "", "ext",
+      /postgres|cnpg/i.test(x.label) ? lg("postgresql", 16) : /prometheus/i.test(x.label) ? lg("prometheus", 16) : /argo/i.test(x.label) ? lg("argo", 16) : "")).join("");
+  const M = T.managed || [];
+  const inferred = (D.infra && D.infra.diagram.nodes || []).filter((n) => n.inferred && n.lane === "data" &&
+    !(/database|postgres/i.test(n.l) && M.some((m) => m.logo === "postgresql")));
+  const inf = inferred.map((n) => node(n.id, "inferred · outside", esc(n.l), "", "ext", /database/i.test(n.l) ? lg("postgresql", 16) : /redis|cache/i.test(n.l) ? lg("redis", 16) : "")).join("");
+  el.innerHTML = `${fxBar()}<svg class="pv-wires" id="pv-wires"></svg><div class="pv-cols">
+    <div><div class="col-h">Edge</div>${edge || '<div class="muted small">no Ingress</div>'}</div>
+    <div><div class="col-h">Services</div>${svcs}</div>
+    <div><div class="col-h">Namespace <span>(requested by the chart)</span></div>
+      <div class="nsf ${fenced ? "fenced" : ""}"><span class="ns-lbl">${lg("kubernetes", 15, "K8s")}namespace: ${esc(T.namespace || D.namespace)}</span>
+        ${fenced ? `<span class="fence ${FX && T.netpols.some((n) => FX.isNew.has("np:" + n.name)) ? "nwf" : ""}">🛡 ${T.netpols.map((n) => (FX && FX.isNew.has("np:" + n.name) ? "+ " : "") + esc(n.name) + (n.summary ? " (" + esc(n.summary) + ")" : "")).join(" · ")}</span>` : ""}
+        ${noSpread.length ? `<div class="warnbox">⚠ No spread constraints on ${noSpread.map((w) => esc(w.name)).join(", ")}: all replicas could land on one node.</div>` : ""}
+        ${!fenced && T.workloads.length ? `<div class="warnbox soft">No NetworkPolicy: these pods accept traffic from any pod in the cluster.</div>` : ""}
+        ${wl}
+        ${M.length ? `<div class="mg-h">Created by operators <span>· not in the chart · same namespace</span></div>${M.map(managedCard).join("")}` : ""}</div></div>
+    <div><div class="col-h">Config &amp; storage</div>${cfg + inf || '<div class="muted small">none</div>'}</div></div>`;
+  el.style.zoom = pvZoom;
+  const tagRes = (id, res) => { const n = document.getElementById("pv-" + id); if (!n) return; n.dataset.res = res; if (FX && FX.byRes[res]) n.classList.add("fxc"); };
+  T.services.forEach((x) => tagRes(x.id, "Service/" + x.name)); T.ingresses.forEach((x) => tagRes(x.id, "Ingress/" + x.name));
+  T.config.forEach((x) => tagRes(x.id, x.kind + "/" + x.name));
+  el.querySelectorAll(".fx-chip").forEach((b) => (b.onclick = () => fxFocus(b.dataset.r)));
+  el.querySelectorAll(".pod").forEach((p) => (p.onclick = () => {
+    podSel = p.dataset.m ? "m:" + p.dataset.m + ":" + p.dataset.i : p.dataset.w + ":" + p.dataset.i;
+    el.querySelectorAll(".pod").forEach((x) => x.classList.toggle("sel", x === p));
+    p.dataset.m ? managedDetails(p.dataset.m, +p.dataset.i) : podDetails(p.dataset.w, +p.dataset.i);
+  }));
+  requestAnimationFrame(podWires);
+  $("#legend").innerHTML = `<span><i style="background:#2f6db3"></i>pod (min replicas)</span><span><i style="border:1px dashed #6f8aa8"></i>can scale to</span><span><i style="background:#6b5aa8"></i>job run</span><span><i style="background:#a8673a"></i>outside the chart</span>${(T.managed || []).length ? '<span><i style="border:1px dashed #ff8a3d"></i>created by operator</span>' : ""}`;
+}
+function podWires() {
+  const T = topo(), inner = $("#pv-inner"), svg = $("#pv-wires"); if (!svg) return;
+  const R = (id) => { let el = document.getElementById("pv-" + id); if (!el) return null; let x = 0, y = 0; const w = el.offsetWidth, h = el.offsetHeight;
+    while (el && el !== inner) { x += el.offsetLeft; y += el.offsetTop; el = el.offsetParent; } return { l: x, r: x + w, t: y, b: y + h, cy: y + Math.min(h / 2, 40), cx: x + w / 2 }; };
+  const path = (a, b, label, dash) => {
+    if (!a || !b) return "";
+    const x1 = a.r, y1 = a.cy, x2 = b.l, y2 = b.cy, mx = (x1 + x2) / 2;
+    let s = `<path class="pw ${dash ? "dash" : ""}" d="M${x1} ${y1} C${mx} ${y1} ${mx} ${y2} ${x2} ${y2}"/>`;
+    if (label) { const w = label.length * 6.2 + 12; s += `<rect class="pwl-bg" x="${mx - w / 2}" y="${(y1 + y2) / 2 - 9}" width="${w}" height="17" rx="5"/><text class="pwl" x="${mx}" y="${(y1 + y2) / 2 + 3}">${esc(label)}</text>`; }
+    return s;
+  };
+  const back = (a, b) => (a && b ? path({ r: a.r, cy: a.cy }, { l: b.l, cy: b.cy }, "", true) : "");
+  let h = "";
+  T.ingresses.forEach((i) => { h += path(R("users"), R(i.id)); T.ingressClasses.forEach((c) => (h += "")); i.targets.forEach((t) => (h += path(R(i.id), R(t), "/"))); });
+  T.services.forEach((s) => s.targets.forEach((t) => (h += path(R(s.id), R(t), (s.ports[0] || "").split("→").pop().trim()))));
+  T.config.forEach((c) => c.usedBy.forEach((w) => (h += back(R(w), R(c.id)))));
+  T.outside.forEach((x) => x.usedBy.forEach((w) => { if (!(T.managed || []).some((m) => m.id === w)) h += back(R(w), R(x.id)); }));
+  (T.managed || []).forEach((m) => {
+    if (m.operator) h += path(R(m.id), R(m.operator), "creates", true).replace('class="pw dash"', 'class="pw dash op"');
+    m.connections.forEach((c, k) => {
+      const a = R(c.from), b = R(m.id); if (!a || !b) return;
+      const off = Math.min(a.r - a.l, 640) / 2 + k * 46, x1 = a.l + off, y1 = a.b, x2 = b.l + off, y2 = b.t, my = (y1 + y2) / 2, st = CONN[c.status];
+      const label = `:${c.port} · ${c.via[0]}`, w = label.length * 6.2 + 14, w2 = st.lbl.length * 6.2 + 14, lx = x1 + 12;
+      const ly = y1 + 12 + k * 22, lx2 = lx + w + 6;
+      h += `<path class="pw conn ${st.cls}" d="M${x1} ${y1} C${x1} ${my} ${x2} ${my} ${x2} ${y2 - 6}" marker-end="url(#pv-arr-${st.cls})"/>` +
+        `<rect class="pwl-bg conn ${st.cls}" x="${lx}" y="${ly}" width="${w}" height="17" rx="5"/><text class="pwl" x="${lx + w / 2}" y="${ly + 12}">${esc(label)}</text>` +
+        `<rect class="pwl-bg conn ${st.cls}" x="${lx2}" y="${ly}" width="${w2}" height="17" rx="5"/><text class="pwl st ${st.cls}" x="${lx2 + w2 / 2}" y="${ly + 12}">${esc(st.lbl)}</text>`;
+    });
+  });
+  h = `<defs>${["ok", "open", "unk", "bad"].map((c) => `<marker id="pv-arr-${c}" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="arr ${c}" d="M0 0 L10 5 L0 10z"/></marker>`).join("")}</defs>` + h;
+  svg.setAttribute("width", inner.scrollWidth); svg.setAttribute("height", inner.scrollHeight);
+  svg.innerHTML = h;
+}
+function podDetails(wid, i) {
+  const T = topo(), w = T.workloads.find((x) => x.id === wid); if (!w) return;
+  const p = podNames(w)[i] || {};
+  const rows = [["Owner", `${w.kind} ${w.name}`], ["Pod", p.name + (p.ghost ? " (only when the autoscaler scales up)" : "")],
+    ["Replicas", w.daemon ? "one per node" : w.hpa ? `${w.hpa.min}–${w.hpa.max} (HPA ${w.hpa.metric})` : String(w.replicas.min)],
+    ["Placement", w.zoneSpread ? `zone ${p.zone} (spread across zones)` : w.spread ? "spread across nodes" : "no spread constraints: may share a node"],
+    ["ServiceAccount", `${w.sa.name}${w.sa.automount ? " · API token mounted" : " · no token"}`],
+    ["Network", w.netpols.length ? `NetworkPolicy: ${w.netpols.join(", ")}` : "no NetworkPolicy: reachable from any pod"],
+    ["Disruption", w.pdb ? `PDB ${w.pdb}` : w.kind === "Deployment" || w.kind === "StatefulSet" ? "no PDB: a drain can evict every replica" : "n/a"]];
+  $("#ex-kicker").textContent = `Pod · ${w.kind} ${w.name}${podsFixed ? " · with fixes" : ""}`;
+  $("#ex-title").textContent = p.name;
+  $("#ex-body").innerHTML = `<table class="tbl">${rows.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join("")}</table>` +
+    w.containers.map((c) => `<div class="xh">${lg(c.logo, 13)}${esc(c.name)}${c.side ? " (sidecar)" : c.init ? " (init)" : ""}</div><table class="tbl">
+      <tr><td>image</td><td class="rid">${esc(c.image)}</td></tr><tr><td>ports</td><td>${esc(c.ports.join(", ") || "–")}</td></tr>
+      <tr><td>resources</td><td>${esc(c.resources)}</td></tr><tr><td>hardening</td><td>${esc(c.hardening.join(" · ") || "none")}</td></tr>
+      <tr><td>probes</td><td>${esc(c.probes.join(", ") || "none")}</td></tr></table>`).join("");
+  const fs = [...w.findings.map((f) => ({ ...f, c: "" })), ...w.containers.flatMap((c) => c.findings.map((f) => ({ ...f, c: c.name })))];
+  $("#ex-extra").innerHTML = `<div class="xh">Findings on this pod</div>` + (fs.length ? fs.map((f) => `<div class="find ${f.sev}"><div class="hd"><span class="pill ${f.sev}">${f.sev}</span>
+      ${f.rule ? `<span class="rid">${esc(f.rule)}</span>` : ""}<span>${f.c ? esc(f.c) + ": " : ""}${esc(f.title)}</span></div></div>`).join("") : '<div class="ok">✓ No findings</div>');
+  $("#ex-ptrs").innerHTML = ""; $("#ex-find").innerHTML = "";
+  if (!podsFixed && D.files[w.source]) jump(w.source, w.tplStart);
+}
+
+function managedDetails(mid, i) {
+  const T = topo(), m = (T.managed || []).find((x) => x.id === mid); if (!m) return;
+  const p = m.pods[i] || {};
+  const pill = (st) => (st === "blocked" ? "high" : st === "unknown" ? "medium" : "low");
+  $("#ex-kicker").textContent = `External · created by ${m.product}`;
+  $("#ex-title").textContent = p.name;
+  const rows = [["Created from", `${m.kind} ${m.name} (in this chart)`], ["Role", p.role], ["Instances", String(m.pods.length)],
+    ["Image", m.image], ["Port", String(m.port)], ["Storage", m.storage ? `PVC ${m.storage} per instance` : "–"]];
+  $("#ex-body").innerHTML = md(`This pod is **not in the chart**. The chart creates a \`${m.kind}\` custom resource and the **${m.product}** operator turns it into pods, Services and Secrets. ` +
+      "The operator must already be installed in the cluster, and the pod spec (security context, probes, resources) is the operator's, so the chart's container checks don't apply to it.") +
+    `<table class="tbl">${rows.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join("")}</table>` +
+    `<div class="xh">Endpoints the operator creates</div><table class="tbl">${m.services.map(([n, d]) => `<tr><td class="rid">Service ${esc(n)}</td><td>${esc(d)}</td></tr>`).join("")}
+      ${m.secrets.map(([n, d]) => `<tr><td class="rid">Secret ${esc(n)}</td><td>${esc(d)}</td></tr>`).join("")}</table>`;
+  $("#ex-extra").innerHTML = `<div class="xh">Connections from the chart</div>` + (m.connections.length ? m.connections.map((c) =>
+      `<div class="find ${pill(c.status)}"><div class="hd"><span class="pill ${pill(c.status)}">${esc(CONN[c.status].lbl)}</span>
+       <span>${esc(wname(c.from))} → :${c.port} via ${esc(c.via.join(", "))}</span></div><div class="small muted" style="margin-top:4px">${esc(c.why)}</div></div>`).join("")
+      : '<div class="muted">No workload references it.</div>') +
+    (m.notes.length ? `<div class="xh">Notes</div>${m.notes.map((n) => `<div class="warnbox">${esc(n)}</div>`).join("")}` : "") +
+    (m.findings.length ? `<div class="xh">Findings on the ${esc(m.kind)}</div>` + m.findings.map((f) => `<div class="find ${f.sev}"><div class="hd"><span class="pill ${f.sev}">${f.sev}</span>${f.rule ? `<span class="rid">${esc(f.rule)}</span>` : ""}<span>${esc(f.title)}</span></div></div>`).join("") : "");
+  $("#ex-ptrs").innerHTML = ""; $("#ex-find").innerHTML = "";
+  if (!podsFixed && D.files[m.source]) jump(m.source, m.tplStart);
+}
 
 window.__hv = { load, go, setView, setHome, zoomCenter, zoomFit };  // handle for debugging / tests
 if (window.__PRELOAD__) load(window.__PRELOAD__);

@@ -391,7 +391,7 @@ def _check_other(res, obj):
         add("low", "svcexpose", f"Service type {obj['spec']['type']}", "Exposes the app outside the cluster directly. Make sure that's intended.", "", ["type:"])
     if kind == "Ingress" and not (obj.get("spec") or {}).get("tls"):
         add("medium", "tls", "Ingress without TLS", "Traffic reaches the cluster in plaintext.", "tls", ["spec:", "rules:"])
-    if kind == "Secret":
+    if kind == "Secret" and "helm-visualiser.io/placeholder" not in ((obj.get("metadata") or {}).get("annotations") or {}):
         add("info", "secretvalues", "Secret rendered from chart values",
             "If the data comes from values.yaml it's probably committed to git. Consider External Secrets / Sealed Secrets / CSI secrets store, plus encryption at rest.",
             "", ["data:", "stringData:"])
@@ -630,7 +630,9 @@ def _deep_merge(a, b):
 
 
 def analyse_chart_dir(chart_dir: Path, release="demo", namespace="default", overrides="", value_files=(),
-                      set_lines=(), bypass=False, kube_target=None, repo_exceptions=None):
+                      set_lines=(), bypass=False, kube_target=None, repo_exceptions=None,
+                      rendered_override=None, keep_objs=False):
+    """rendered_override: analyse this rendered YAML instead of running helm (used by the fix planner)."""
     chart_dir = Path(chart_dir)
     t0 = time.time()
     if not (chart_dir / "Chart.yaml").exists():
@@ -647,7 +649,7 @@ def analyse_chart_dir(chart_dir: Path, release="demo", namespace="default", over
         raise AnalysisError(f"Chart.yaml is not valid YAML: {e}")
 
     notes = []
-    if chart.get("dependencies") and not (chart_dir / "charts").exists():
+    if chart.get("dependencies") and not (chart_dir / "charts").exists() and rendered_override is None:
         rc, _, err = _run([HELM, "dependency", "build", str(chart_dir)])
         notes.append("Fetched dependencies with `helm dependency build`." if rc == 0
                      else f"Dependencies could not be fetched: {err.strip()[:300]}")
@@ -705,9 +707,12 @@ def analyse_chart_dir(chart_dir: Path, release="demo", namespace="default", over
         notes.append(f"**Preview mode:** `fail`/`required` checks were switched off in {n} template file(s) so the chart could render. "
                      "Anything marked `setme-…` is a placeholder, not a real value.")
 
-    rc, rendered, err = _run([HELM, "template", release, str(render_dir), "--namespace", namespace] + extra)
+    if rendered_override is not None:
+        rc, rendered, err = 0, rendered_override, ""
+    else:
+        rc, rendered, err = _run([HELM, "template", release, str(render_dir), "--namespace", namespace] + extra)
     render_error = err.strip() if rc != 0 else ""
-    lrc, lout, lerr = _run([HELM, "lint", str(render_dir)] + extra)
+    lrc, lout, lerr = (0, "(lint skipped: fix preview)", "") if rendered_override is not None else _run([HELM, "lint", str(render_dir)] + extra)
     if scratch:
         shutil.rmtree(scratch, ignore_errors=True)
     lint = (lout + lerr).strip()
@@ -719,6 +724,9 @@ def analyse_chart_dir(chart_dir: Path, release="demo", namespace="default", over
 
     resources = _parse_rendered(rendered, files)
     _link(resources)
+    made = views.operator_outputs([r["_obj"] for r in resources])  # e.g. CNPG creates <cluster>-app
+    for r in resources:
+        r["missing"] = [m for m in r["missing"] if (m[0], m[1]) not in made]
     findings = _findings(resources, files, rendered)
 
     # global: NetworkPolicy presence
@@ -770,6 +778,10 @@ def analyse_chart_dir(chart_dir: Path, release="demo", namespace="default", over
     objs = {r["id"]: r.pop("_obj") for r in resources}
     helm_view = views.helm_concepts(files, chart, resources, lint, render_error, vindex, used_vf, bool(overrides or argo or set_lines))
     infra_view = views.infrastructure(resources, objs, findings, externals, files, namespace)
+    try:
+        topo = views.topology(resources, objs, findings, externals, namespace)
+    except Exception as e:  # never let the pods view break an analysis
+        topo = dict(error=str(e)[:200], workloads=[], services=[], ingresses=[], config=[], netpols=[], outside=[], ingressClasses=[])
     return dict(chart=dict(name=chart.get("name"), version=chart.get("version"), appVersion=chart.get("appVersion"),
                            description=chart.get("description"), apiVersion=chart.get("apiVersion"), type=chart.get("type", "application")),
                 release=release, namespace=namespace, files=files, rendered=rendered, renderError=render_error,
@@ -777,12 +789,13 @@ def analyse_chart_dir(chart_dir: Path, release="demo", namespace="default", over
                 valueFiles=available_vf, usedValueFiles=used_vf,
                 required=[dict(q, placeholder=_placeholder(q["path"])) for q in required],
                 suggested=_skeleton([r["path"] for r in required]), externals=externals, bypass=bool(bypass),
-                helm=helm_view, infra=infra_view,
+                helm=helm_view, infra=infra_view, topology=topo,
                 ruleset=rules.RULESET["version"], kubeTarget=kube_target, kubeTargets=deprecations.TARGETS,
                 exceptions=exc_rows, chartNotes=exc_cfg["notes"],
                 counts={s: sum(1 for f in findings if f["sev"] == s and not f.get("accepted")) for s in SEV_WEIGHT},
                 accepted=sum(1 for f in findings if f.get("accepted")),
-                durationMs=int((time.time() - t0) * 1000))
+                durationMs=int((time.time() - t0) * 1000),
+                **({"_objs": objs} if keep_objs else {}))
 
 
 def _parse_rendered(rendered, files):

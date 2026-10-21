@@ -695,3 +695,336 @@ def infrastructure(resources, objs, findings, externals, files, release_ns):
                 lanes=[dict(id="plat", l="Platform (cluster must provide)"), dict(id="net", l="Network & edge"),
                        dict(id="app", l="Compute"), dict(id="data", l="Config · secrets · data")],
                 side=[dict(id="id", l="Identity"), dict(id="obs", l="Observability")]))
+
+
+# ---------------------------------------------------------------------------
+# Pods view: what the chart asks Kubernetes to run
+# ---------------------------------------------------------------------------
+LOGO_RULES = [(r"prometheus|alertmanager|node-exporter|(^|/)prom/", "prometheus"), (r"grafana", "grafana"),
+              (r"postgres|cloudnative-pg|cnpg", "postgresql"), (r"redis|valkey", "redis"), (r"nginx", "nginx"),
+              (r"argo", "argo"), (r"registry\.k8s\.io|k8s\.gcr\.io|(^|/)kube-", "kubernetes")]
+
+
+def logo_for(image):
+    img = str(image or "").lower()
+    return next((slug for rx, slug in LOGO_RULES if re.search(rx, img)), None)
+
+
+def _res(c):
+    r = c.get("resources") or {}
+    q, l = r.get("requests") or {}, r.get("limits") or {}
+    if not q and not l:
+        return "no requests / limits"
+    parts = []
+    if q.get("cpu") or l.get("cpu"):
+        parts.append("cpu " + (str(q.get("cpu", "–")) + (f"→{l['cpu']}" if l.get("cpu") else "")))
+    if q.get("memory") or l.get("memory"):
+        qm, lm = q.get("memory"), l.get("memory")
+        parts.append("mem " + (f"{qm} (request = limit)" if qm and qm == lm else f"{qm or '–'}→{lm or '∞'}"))
+    return " · ".join(parts)
+
+
+def _hardening(c, psc):
+    sc = c.get("securityContext") or {}
+    out = []
+    if sc.get("runAsNonRoot", psc.get("runAsNonRoot")) or (sc.get("runAsUser", psc.get("runAsUser")) or 0) > 0:
+        out.append("non-root")
+    if sc.get("readOnlyRootFilesystem"):
+        out.append("read-only FS")
+    if "ALL" in [str(x).upper() for x in ((sc.get("capabilities") or {}).get("drop") or [])]:
+        out.append("drop ALL")
+    if (sc.get("seccompProfile") or psc.get("seccompProfile") or {}).get("type") in ("RuntimeDefault", "Localhost"):
+        out.append("seccomp")
+    if sc.get("allowPrivilegeEscalation") is False:
+        out.append("no priv-esc")
+    if sc.get("privileged"):
+        out.append("PRIVILEGED")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Pods an operator creates from a custom resource in the chart (not in the chart itself)
+# ---------------------------------------------------------------------------
+def _g(d, *path, default=None):
+    for p in path:
+        d = d.get(p) if isinstance(d, dict) else None
+        if d is None:
+            return default
+    return d
+
+
+def _cnpg_cluster(n, s):
+    inst = int(s.get("instances") or 1)
+    return dict(product="CloudNativePG", what="PostgreSQL cluster", logo="postgresql", port=5432,
+                image=s.get("imageName") or "ghcr.io/cloudnative-pg/postgresql (operator default)",
+                pods=[dict(name=f"{n}-{i + 1}", role="primary" if i == 0 else "replica") for i in range(inst)],
+                storage=_g(s, "storage", "size"), podLabels={"cnpg.io/cluster": n},
+                services=[(f"{n}-rw", "read/write → primary"), (f"{n}-ro", "read-only → replicas"), (f"{n}-r", "any instance")],
+                secrets=[(f"{n}-app", "app user: username, password, host, uri"), (f"{n}-superuser", "postgres superuser (if enabled)"),
+                         (f"{n}-ca", "CA certificate"), (f"{n}-server", "server TLS")],
+                notes=[] if inst > 1 else ["1 instance: no standby, so a node or pod failure means downtime"])
+
+
+def _cnpg_pooler(n, s):
+    inst = int(s.get("instances") or 1)
+    cl = _g(s, "cluster", "name") or "?"
+    return dict(product="CloudNativePG", what=f"PgBouncer pooler for {cl}", logo="postgresql", port=5432, image="pgbouncer (operator default)",
+                pods=[dict(name=f"{n}-<hash>-{i + 1}", role="pooler") for i in range(inst)], storage=None,
+                podLabels={"cnpg.io/poolerName": n}, services=[(n, f"{_g(s, 'type') or 'rw'} pool")], secrets=[], notes=[])
+
+
+def _zalando(n, s):
+    inst = int(s.get("numberOfInstances") or 1)
+    return dict(product="Zalando Postgres Operator", what="PostgreSQL cluster", logo="postgresql", port=5432,
+                image=s.get("dockerImage") or "spilo (operator default)",
+                pods=[dict(name=f"{n}-{i}", role="primary" if i == 0 else "replica") for i in range(inst)],
+                storage=_g(s, "volume", "size"), podLabels={"cluster-name": n},
+                services=[(n, "primary"), (f"{n}-repl", "replicas")],
+                secrets=[(f"{u}.{n}.credentials.postgresql.acid.zalan.do", f"user {u}") for u in (s.get("users") or {})], notes=[])
+
+
+def _prom(kind):
+    def f(n, s):
+        reps = int(s.get("replicas") or 1)
+        prefix = "prometheus" if kind == "Prometheus" else "alertmanager"
+        return dict(product="Prometheus Operator", what=kind, logo="prometheus", port=9090 if kind == "Prometheus" else 9093,
+                    image=s.get("image") or f"{prefix} (operator default)",
+                    pods=[dict(name=f"{prefix}-{n}-{i}", role=kind.lower()) for i in range(reps)],
+                    storage=_g(s, "storage", "volumeClaimTemplate", "spec", "resources", "requests", "storage"),
+                    podLabels={kind.lower(): n}, services=[(f"{prefix}-operated", "governing service")], secrets=[], notes=[])
+    return f
+
+
+def _strimzi(n, s):
+    reps = int(_g(s, "kafka", "replicas") or 0)
+    return dict(product="Strimzi", what="Kafka cluster", logo=None, port=9092, image="kafka (operator default)",
+                pods=[dict(name=f"{n}-kafka-{i}", role="broker") for i in range(reps)] or [dict(name=f"{n}-<pool>-N", role="broker (KafkaNodePool)")],
+                storage=_g(s, "kafka", "storage", "size"), podLabels={"strimzi.io/cluster": n},
+                services=[(f"{n}-kafka-bootstrap", "bootstrap")], secrets=[(f"{n}-cluster-ca-cert", "cluster CA")], notes=[])
+
+
+MANAGED = {("postgresql.cnpg.io", "Cluster"): _cnpg_cluster, ("postgresql.cnpg.io", "Pooler"): _cnpg_pooler,
+           ("acid.zalan.do", "postgresql"): _zalando, ("monitoring.coreos.com", "Prometheus"): _prom("Prometheus"),
+           ("monitoring.coreos.com", "Alertmanager"): _prom("Alertmanager"), ("kafka.strimzi.io", "Kafka"): _strimzi}
+
+
+def managed_spec(obj):
+    """Describe what an operator will create for this custom resource, or None."""
+    group = str(obj.get("apiVersion", "")).split("/")[0]
+    fn = MANAGED.get((group, obj.get("kind")))
+    if not fn:
+        return None
+    try:
+        return fn((obj.get("metadata") or {}).get("name") or "?", obj.get("spec") or {})
+    except Exception:
+        return None
+
+
+def operator_outputs(objs):
+    """(kind, name) pairs that operators will create from the chart's custom resources."""
+    out = set()
+    for o in objs:
+        m = managed_spec(o) if isinstance(o, dict) else None
+        if m:
+            out |= {("Secret", s) for s, _ in m["secrets"]} | {("Service", s) for s, _ in m["services"]}
+    return out
+
+
+def _peer_allows(peer, labels):
+    """Does one NetworkPolicy egress 'to' peer allow pods with these labels in the same namespace?"""
+    if "ipBlock" in peer:
+        return "unknown"
+    ps, ns = peer.get("podSelector"), peer.get("namespaceSelector")
+    if ps is None:
+        return True if ns is not None else False
+    ml, me = ps.get("matchLabels") or {}, ps.get("matchExpressions") or []
+    if me:
+        return "unknown"
+    return all(labels.get(k) == str(v) for k, v in ml.items())
+
+
+def _egress_status(policies, labels, port):
+    """allowed / blocked / unknown / open for a workload's egress to the managed pods."""
+    eg = [p for p in policies if "Egress" in (p.get("policyTypes") or [])]
+    if not eg:
+        return "open", "no egress NetworkPolicy: traffic is not restricted"
+    unknown = False
+    for p in eg:
+        for rule in p.get("egress") or []:
+            ports = rule.get("ports") or []
+            port_ok = not ports or any(str(x.get("port")) in (str(port), "") or x.get("port") is None for x in ports)
+            if not port_ok:
+                continue
+            peers = rule.get("to")
+            if not peers:
+                return "allowed", f"egress rule in {p['_name']} allows any destination on port {port}"
+            for peer in peers:
+                a = _peer_allows(peer, labels)
+                if a is True:
+                    return "allowed", f"{p['_name']} allows egress to these pods on port {port}"
+                unknown = unknown or a == "unknown"
+    if unknown:
+        return "unknown", "egress uses ipBlock or label expressions: can't confirm from the chart"
+    return "blocked", f"egress NetworkPolicy has no rule allowing these pods on port {port}: connections will time out"
+
+
+def topology(resources, objs, findings, externals, namespace):
+    by_kind, byid = {}, {r["id"]: r for r in resources}
+    for r in resources:
+        by_kind.setdefault(r["kind"], []).append(r)
+    fby = {}
+    for f in findings:
+        if not f.get("accepted"):
+            fby.setdefault(f.get("resource"), []).append(f)
+    hpa_for = {}
+    for h in by_kind.get("HorizontalPodAutoscaler", []):
+        s = objs[h["id"]].get("spec") or {}
+        met = [m.get("resource", {}).get("name") + " " + str((m.get("resource", {}).get("target") or {}).get("averageUtilization", "")) + "%"
+               for m in s.get("metrics") or [] if m.get("type") == "Resource"]
+        for l in h["links"]:
+            hpa_for[l["to"]] = dict(min=s.get("minReplicas", 1), max=s.get("maxReplicas"), metric=", ".join(met) or "custom")
+    pdb_for = {}
+    for p in by_kind.get("PodDisruptionBudget", []):
+        s = objs[p["id"]].get("spec") or {}
+        desc = f"maxUnavailable {s['maxUnavailable']}" if "maxUnavailable" in s else f"minAvailable {s.get('minAvailable')}"
+        for l in p["links"]:
+            pdb_for[l["to"]] = desc
+    np_for = {}
+    netpols = []
+    for n in by_kind.get("NetworkPolicy", []):
+        s = objs[n["id"]].get("spec") or {}
+        types = s.get("policyTypes") or ["Ingress"]
+        summ = []
+        if "Ingress" in types:
+            summ.append("ingress: " + ("deny all" if not s.get("ingress") else f"{len(s['ingress'])} rule(s)"))
+        if "Egress" in types:
+            summ.append("egress: " + ("deny all" if not s.get("egress") else f"{len(s['egress'])} rule(s)"))
+        targets = [l["to"] for l in n["links"]]
+        netpols.append(dict(id=n["id"], name=n["name"], types=types, summary=" · ".join(summ), targets=targets))
+        for t in targets:
+            np_for.setdefault(t, []).append(n["name"])
+
+    workloads = []
+    for r in resources:
+        if r["kind"] not in ("Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob", "Pod", "ReplicaSet"):
+            continue
+        o = objs[r["id"]]
+        spec = o.get("spec") or {}
+        ps = (spec.get("jobTemplate") or {}).get("spec", {}).get("template", {}).get("spec") if r["kind"] == "CronJob" else \
+            (spec if r["kind"] == "Pod" else (spec.get("template") or {}).get("spec")) or {}
+        ps = ps or {}
+        psc = ps.get("securityContext") or {}
+        reps = spec.get("replicas", 1) if r["kind"] in ("Deployment", "StatefulSet", "ReplicaSet") else 1
+        hpa = hpa_for.get(r["id"])
+        rmin, rmax = (hpa["min"], hpa["max"]) if hpa else (reps, reps)
+        vols = {v.get("name"): v for v in ps.get("volumes") or []}
+        vct = [dict(name=(t.get("metadata") or {}).get("name"), size=((((t.get("spec") or {}).get("resources") or {}).get("requests") or {}).get("storage", "?")))
+               for t in spec.get("volumeClaimTemplates") or []]
+        containers = []
+        for kind_c, lst in (("init", ps.get("initContainers") or []), ("main", ps.get("containers") or [])):
+            for i, c in enumerate(lst):
+                cf = [dict(sev=f["sev"], title=f["title"].split("] ", 1)[-1], rule=f.get("rule"))
+                      for f in fby.get(r["id"], []) if f["title"].startswith(f"[{c.get('name')}]")]
+                containers.append(dict(
+                    name=c.get("name"), image=c.get("image"), logo=logo_for(c.get("image")), init=kind_c == "init", side=kind_c == "main" and i > 0,
+                    ports=[f"{p.get('containerPort')}{' ' + p['name'] if p.get('name') else ''}" for p in c.get("ports") or []],
+                    resources=_res(c), hardening=_hardening(c, psc),
+                    probes=[k.replace("Probe", "") for k in ("readinessProbe", "livenessProbe", "startupProbe") if c.get(k)],
+                    findings=cf))
+        mounts = []
+        for c in (ps.get("containers") or []) + (ps.get("initContainers") or []):
+            for m in c.get("volumeMounts") or []:
+                v = vols.get(m.get("name"), {})
+                t = next((k for k in ("configMap", "secret", "persistentVolumeClaim", "emptyDir", "hostPath", "projected", "csi") if k in v), None)
+                if not t and any(x["name"] == m.get("name") for x in vct):
+                    t = "pvc-template"
+                label = {"configMap": f"ConfigMap {(v.get('configMap') or {}).get('name', '')}", "secret": f"Secret {(v.get('secret') or {}).get('secretName', '')}",
+                         "persistentVolumeClaim": f"PVC {(v.get('persistentVolumeClaim') or {}).get('claimName', '')}", "emptyDir": f"emptyDir {m.get('mountPath')}",
+                         "hostPath": f"hostPath {(v.get('hostPath') or {}).get('path', '')}", "pvc-template": f"PVC {m.get('name')}-<pod>"}.get(t, f"{t or 'volume'} {m.get('mountPath')}")
+                if not any(x["label"] == label for x in mounts):
+                    mounts.append(dict(type=t or "volume", label=label.strip()))
+            for ef in c.get("envFrom") or []:
+                if "configMapRef" in ef:
+                    mounts.append(dict(type="configMap", label=f"ConfigMap {ef['configMapRef'].get('name')} (env)"))
+                if "secretRef" in ef:
+                    mounts.append(dict(type="secret", label=f"Secret {ef['secretRef'].get('name')} (env)"))
+            for e in c.get("env") or []:
+                ref = (e.get("valueFrom") or {}).get("secretKeyRef")
+                if ref and not any(x["label"].startswith(f"Secret {ref.get('name')}") for x in mounts):
+                    mounts.append(dict(type="secret", label=f"Secret {ref.get('name')} (env)"))
+        sa = ps.get("serviceAccountName") or "default"
+        spread = bool(ps.get("topologySpreadConstraints")) or bool((ps.get("affinity") or {}).get("podAntiAffinity"))
+        zone_spread = any("zone" in str(t.get("topologyKey", "")) for t in ps.get("topologySpreadConstraints") or [])
+        wl_findings = [dict(sev=f["sev"], title=f["title"], rule=f.get("rule")) for f in fby.get(r["id"], []) if not f["title"].startswith("[")]
+        workloads.append(dict(
+            id=r["id"], kind=r["kind"], name=r["name"], hook=r.get("hook"), source=r["source"], tplStart=r["tplStart"],
+            replicas=dict(min=rmin, max=rmax, fixed=reps), hpa=hpa, daemon=r["kind"] == "DaemonSet",
+            schedule=spec.get("schedule") if r["kind"] == "CronJob" else None,
+            pdb=pdb_for.get(r["id"]), netpols=np_for.get(r["id"], []), spread=spread, zoneSpread=zone_spread,
+            sa=dict(name=sa, automount=ps.get("automountServiceAccountToken") is not False), vct=vct,
+            hostNetwork=bool(ps.get("hostNetwork")), containers=containers, mounts=mounts, findings=wl_findings,
+            logo=next((c["logo"] for c in containers if not c["init"] and c["logo"]), None)))
+
+    services = []
+    for s in by_kind.get("Service", []):
+        sp = objs[s["id"]].get("spec") or {}
+        services.append(dict(id=s["id"], name=s["name"], type=sp.get("type", "ClusterIP") + (" · headless" if sp.get("clusterIP") == "None" else ""),
+                             ports=[f"{p.get('port')} → {p.get('targetPort', p.get('port'))}" for p in sp.get("ports") or []],
+                             targets=[l["to"] for l in s["links"] if l["to"] in {w['id'] for w in workloads}]))
+    ingresses = []
+    for i in by_kind.get("Ingress", []):
+        sp = objs[i["id"]].get("spec") or {}
+        hosts = [x.get("host") for x in sp.get("rules") or [] if x.get("host")]
+        ingresses.append(dict(id=i["id"], name=i["name"], hosts=hosts, tls=bool(sp.get("tls")), className=sp.get("ingressClassName"),
+                              targets=[l["to"] for l in i["links"]]))
+    config = []
+    for k in ("ConfigMap", "Secret", "PersistentVolumeClaim"):
+        for r in by_kind.get(k, []):
+            o = objs[r["id"]]
+            keys = list((o.get("data") or {}).keys()) + list((o.get("stringData") or {}).keys())
+            used_by = [w["id"] for w in workloads if any(r["name"] in m["label"] for m in w["mounts"])]
+            config.append(dict(id=r["id"], kind=k, name=r["name"], keys=keys[:6], usedBy=used_by,
+                               note="from values.yaml" if k == "Secret" and keys else ""))
+    for w in workloads:
+        for v in w["vct"]:
+            config.append(dict(id=f"vct-{w['id']}-{v['name']}", kind="PVC template", name=f"{v['name']}-{w['name']}-N", keys=[v["size"]], usedBy=[w["id"]], note="per replica"))
+    outside = [dict(id=x["id"], label=x["label"], category=x["category"], usedBy=x["consumers"]) for x in externals
+               if x["category"] in ("existing", "operator", "values")]
+
+    # pods that an operator creates from the chart's custom resources, and which workloads connect to them
+    pol_specs = {}
+    for n in by_kind.get("NetworkPolicy", []):
+        spec = dict(objs[n["id"]].get("spec") or {}, _name=n["name"])
+        spec.setdefault("policyTypes", ["Ingress"])
+        for l in n["links"]:
+            pol_specs.setdefault(l["to"], []).append(spec)
+    wl_text = {w["id"]: str(objs[w["id"]].get("spec") or {}) for w in workloads}
+    managed = []
+    for r in resources:
+        m = managed_spec(objs.get(r["id"]) or {})
+        if not m:
+            continue
+        op = next((x for x in outside if x["category"] == "operator" and r["id"] in x["usedBy"]), None)
+        conns = []
+        for w in workloads:
+            t = wl_text[w["id"]]
+            via = [f"Secret {s}" for s, _ in m["secrets"] if s in t] + [f"Service {s}" for s, _ in m["services"] if s in t]
+            # also config the workload loads (e.g. DATABASE_URL in a ConfigMap pointing at <cluster>-rw)
+            for c in config:
+                if w["id"] in c["usedBy"] and c["id"] in objs:
+                    data = str(objs[c["id"]].get("data") or "") + str(objs[c["id"]].get("stringData") or "")
+                    via += [f"{c['kind']} {c['name']} → {s}" for s, _ in m["services"] + m["secrets"] if re.search(re.escape(s) + r"(?![\w-])", data)]
+            if not via:
+                continue
+            st, why = _egress_status(pol_specs.get(w["id"], []), m["podLabels"], m["port"])
+            conns.append(dict(**{"from": w["id"]}, via=via, port=m["port"], status=st, why=why))
+        managed.append(dict(id=r["id"], kind=r["kind"], name=r["name"], source=r["source"], tplStart=r["tplStart"],
+                            operator=op["id"] if op else None, connections=conns,
+                            findings=[dict(sev=f["sev"], title=f["title"], rule=f.get("rule")) for f in fby.get(r["id"], [])],
+                            **{k: m[k] for k in ("product", "what", "logo", "port", "image", "pods", "storage", "services", "notes")},
+                            secrets=[s for s in m["secrets"] if s[0].endswith("-app") or any(s[0] in c2 for c in conns for c2 in c["via"])] or m["secrets"][:1]))
+    # an operator-created Secret is not something that "must already exist"
+    made = {f"Secret {s}" for r in resources for s, _ in ((managed_spec(objs.get(r["id"]) or {}) or {}).get("secrets") or [])}
+    outside = [x for x in outside if x["label"] not in made]
+    return dict(namespace=namespace, ingresses=ingresses, services=services, workloads=workloads, config=config, managed=managed,
+                netpols=netpols, outside=outside, ingressClasses=sorted({i["className"] or "default" for i in ingresses}))
